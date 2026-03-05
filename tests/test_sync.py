@@ -577,16 +577,19 @@ class TestManagementAPI:
 
     def test_add_and_remove_peer(self):
         from core.peer_manager import PeerManager
+        from utils.trust_store import TrustStore
         from core.server import app
 
         pm = PeerManager(self.settings)
         app.state.peer_manager = pm
+        ts = TrustStore(self.settings.trust_store_path)
+        app.state.trust_store = ts
         # add_peer will fail verification since no real peer exists, but we test the route
         r = self.client.post(
             "/api/v1/peers", json={"url": "https://fake:9999"}, headers=self.admin
         )
-        # Peer verification will fail so we expect 400
-        assert r.status_code == 400
+        # Peer verification will fail so we expect 502 (Bad Gateway) because it can't fetch identity
+        assert r.status_code == 502
 
     def test_put_ignore(self):
         r = self.client.put(
