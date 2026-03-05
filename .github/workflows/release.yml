@@ -35,13 +35,11 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install dependencies
-        working-directory: SyncCore
         run: |
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
 
       - name: Run tests
-        working-directory: SyncCore
         run: python -m pytest tests/ -v
 
   # ── 2. Build the React frontend (once, shared across OS jobs) ─────────
@@ -54,10 +52,10 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
-          cache-dependency-path: SyncCore/web/package-lock.json
+          cache-dependency-path: web/package-lock.json
 
       - name: Install & build
-        working-directory: SyncCore/web
+        working-directory: web
         run: |
           npm ci
           npm run build
@@ -65,7 +63,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: frontend-dist
-          path: SyncCore/web/dist/
+          path: web/dist/
           retention-days: 1
 
   # ── 3. PyInstaller build matrix ───────────────────────────────────────
@@ -91,7 +89,6 @@ jobs:
     defaults:
       run:
         shell: ${{ matrix.shell }}
-        working-directory: SyncCore
 
     steps:
       - uses: actions/checkout@v4
@@ -109,40 +106,33 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: frontend-dist
-          path: SyncCore/web/dist/
+          path: web/dist/
 
       - name: Build with PyInstaller
         run: pyinstaller synccore.spec --noconfirm --clean
 
       # ── Strip unnecessary files from the bundle ──
       - name: Prune bundle
+        shell: python
         run: |
-          python -c "
-          import shutil, pathlib, os
+          import shutil, pathlib
 
-          dist = pathlib.Path('dist/SyncCore')
+          dist = pathlib.Path("dist/SyncCore")
 
           # Patterns that should never ship
           remove_patterns = [
-              # Test / dev artifacts
-              '**/__pycache__',
-              '**/test_*',
-              '**/tests',
-              '**/*.pyc',
-              '**/*.pyo',
-              # Docs & metadata nobody needs at runtime
-              '**/*.dist-info',
-              '**/*.egg-info',
-              # Locale files (saves ~5-15 MB)
-              '**/locale',
-              # Type stubs
-              '**/*.pyi',
-              # macOS resource forks
-              '**/.DS_Store',
-              # Windows thumbnail cache
-              '**/Thumbs.db',
-              # Source maps (shouldn't be in prod frontend build)
-              '**/*.map',
+              "**/__pycache__",
+              "**/test_*",
+              "**/tests",
+              "**/*.pyc",
+              "**/*.pyo",
+              "**/*.dist-info",
+              "**/*.egg-info",
+              "**/locale",
+              "**/*.pyi",
+              "**/.DS_Store",
+              "**/Thumbs.db",
+              "**/*.map",
           ]
 
           removed = 0
@@ -154,8 +144,7 @@ jobs:
                       p.unlink(missing_ok=True)
                   removed += 1
 
-          print(f'Pruned {removed} unnecessary items from bundle')
-          "
+          print(f"Pruned {removed} unnecessary items from bundle")
 
       - name: Package
         run: ${{ matrix.zip_cmd }}
@@ -164,9 +153,9 @@ jobs:
         with:
           name: ${{ matrix.artifact }}
           path: |
-            SyncCore/SyncCore-windows.zip
-            SyncCore/SyncCore-linux.tar.gz
-            SyncCore/SyncCore-macos.tar.gz
+            SyncCore-windows.zip
+            SyncCore-linux.tar.gz
+            SyncCore-macos.tar.gz
           if-no-files-found: ignore
           retention-days: 5
 
