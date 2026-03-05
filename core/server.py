@@ -43,17 +43,17 @@ from core.peer_manager import RateLimiter  # reuse existing implementation
 
 _upload_limiter = RateLimiter(window=60.0, limit=60)
 
-# CORS is only needed during development when the frontend runs on a
-# different port (e.g. Vite dev server).  In production the React build
-# is served from the same origin so CORS headers are unnecessary.
-if os.environ.get("DEBUG", "").lower() in ("1", "true", "yes"):
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["http://localhost:5173", "http://localhost:3000"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+# CORS — always enabled so the dashboard works regardless of how the
+# user reaches it (localhost vs 127.0.0.1, HTTP vs HTTPS, dev server,
+# etc.).  Without this, browsers such as Firefox reject cross-origin
+# fetch() calls with "NetworkError when attempting to fetch resource".
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # ---------------------------------------------------------------------------
@@ -379,8 +379,42 @@ else:
 
 if _web_dist.is_dir():
     from fastapi.staticfiles import StaticFiles
+    from starlette.responses import FileResponse as _FileResponse
 
-    app.mount("/", StaticFiles(directory=str(_web_dist), html=True), name="frontend")
+    # Serve the built JS / CSS / image assets from the /assets sub-path.
+    # Mounting at "/assets" (instead of "/") avoids a catch-all Mount that
+    # could shadow the API routes above — the root cause of
+    # "NetworkError when attempting to fetch resource" from the .exe build.
+    _assets_dir = _web_dist / "assets"
+    if _assets_dir.is_dir():
+        app.mount(
+            "/assets",
+            StaticFiles(directory=str(_assets_dir)),
+            name="assets",
+        )
+
+    _index_html = _web_dist / "index.html"
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def serve_spa(full_path: str):
+        """SPA catch-all: serve root-level static files or index.html.
+
+        This route is registered AFTER every API route, so /api/v1/* and
+        other endpoints always take priority.
+        """
+        # Root-level static files (e.g. vite.svg)
+        if full_path and "/" not in full_path:
+            candidate = _web_dist / full_path
+            if (
+                candidate.is_file()
+                and candidate.resolve().parent == _web_dist.resolve()
+            ):
+                return _FileResponse(str(candidate))
+        # Everything else gets index.html so React Router can handle it
+        if _index_html.is_file():
+            return _FileResponse(str(_index_html))
+        raise HTTPException(status_code=404, detail="Not found")
+
 else:
     log.warning(
         "Web dashboard not found at %s — run 'npm run build' in web/",
