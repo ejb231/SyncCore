@@ -16,7 +16,13 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
       setAdminToken(res.admin_token)
       onComplete()
     } catch (err) {
-      setError((err as Error).message)
+      const msg = (err as Error).message || ''
+      // 409 means setup is already done — reload so the app shows the login page
+      if (msg.startsWith('409')) {
+        window.location.reload()
+        return
+      }
+      setError(msg)
     } finally {
       setLoading(false)
     }

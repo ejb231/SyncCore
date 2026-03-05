@@ -38,7 +38,7 @@ function Layout() {
   )
 }
 
-type AppState = 'loading' | 'setup' | 'login' | 'ready'
+type AppState = 'loading' | 'setup' | 'login' | 'ready' | 'connection-error'
 
 export default function App() {
   const [state, setState] = useState<AppState>('loading')
@@ -74,8 +74,8 @@ export default function App() {
         setState('login')
       }
     } catch {
-      // Network error / server not ready
-      setState(getAdminToken() ? 'ready' : 'login')
+      // Network error — likely a TLS certificate issue or server not running
+      setState('connection-error')
     }
   }
 
@@ -83,6 +83,39 @@ export default function App() {
     return (
       <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center">
         <div className="text-gray-400 text-sm">Connecting to SyncCore…</div>
+      </div>
+    )
+  }
+
+  if (state === 'connection-error') {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
+        <div className="bg-white rounded-2xl shadow-xl p-8 max-w-md w-full text-center">
+          <div className="text-4xl mb-4">🔒</div>
+          <h1 className="text-xl font-bold text-gray-900 mb-2">Cannot Connect to SyncCore</h1>
+          <p className="text-sm text-gray-600 mb-4 leading-relaxed">
+            This usually happens after a reset because the browser needs to
+            accept the new TLS certificate.
+          </p>
+          <div className="bg-gray-50 rounded-lg p-4 text-left text-sm space-y-2 mb-5">
+            <p className="font-medium text-gray-700">To fix this:</p>
+            <ol className="list-decimal list-inside space-y-1 text-gray-600">
+              <li>Open <a href={window.location.origin} target="_blank" rel="noreferrer"
+                className="text-blue-600 underline">{window.location.origin}</a> in a new tab</li>
+              <li>Accept the certificate warning (click "Advanced" → "Accept the Risk")</li>
+              <li>Come back here and click Retry</li>
+            </ol>
+          </div>
+          <button
+            onClick={() => { setState('loading'); setTimeout(checkState, 500) }}
+            className="w-full bg-blue-600 text-white py-2.5 rounded-lg font-semibold hover:bg-blue-700 transition-colors"
+          >
+            Retry Connection
+          </button>
+          <p className="text-xs text-gray-400 mt-4">
+            If this persists, make sure SyncCore is running (<code className="bg-gray-100 px-1 py-0.5 rounded">python main.py run</code>).
+          </p>
+        </div>
       </div>
     )
   }

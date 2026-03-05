@@ -465,7 +465,8 @@ async def initial_setup(request: Request):
         auth_header = request.headers.get("authorization", "")
         if not auth_header.startswith("Bearer "):
             raise HTTPException(
-                status_code=401, detail="Setup already complete - admin token required"
+                status_code=409,
+                detail="Setup already complete. Please log in with your admin token.",
             )
         token = auth_header.removeprefix("Bearer ").strip()
         if token != settings.admin_token:
