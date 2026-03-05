@@ -36,9 +36,16 @@ def db(tmp_path):
 def settings(tmp_path):
     sync = tmp_path / "sync"
     sync.mkdir()
+    # Generate test certs so PeerManager and other components can read them
+    cert_path = tmp_path / "cert.pem"
+    key_path = tmp_path / "key.pem"
+    generate_self_signed_cert(cert_path, key_path)
     return Settings(
         sync_folder=str(sync),
         db_path=str(tmp_path / "test.db"),
+        ssl_cert=str(cert_path),
+        ssl_key=str(key_path),
+        trust_store_path=str(tmp_path / "trusted_peers.json"),
         api_key="test-key",
         node_id="test-node",
         port=19876,
