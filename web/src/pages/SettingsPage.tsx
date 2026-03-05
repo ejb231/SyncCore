@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
-import { Save, AlertCircle, Eye, EyeOff, Copy, Check, Settings, Globe, Shield, Wrench } from 'lucide-react'
+import { Save, AlertCircle, Shield, Settings, Globe, Wrench, Lock } from 'lucide-react'
 
 interface FieldDef {
   key: string
@@ -66,10 +66,10 @@ export default function SettingsPage() {
   const [form, setForm] = useState<Record<string, unknown>>({})
   const [restartBanner, setRestartBanner] = useState(false)
   const [saved, setSaved] = useState(false)
-  const [showToken, setShowToken] = useState(false)
-  const [adminToken, setAdminToken] = useState<string | null>(null)
-  const [tokenCopied, setTokenCopied] = useState(false)
-  const [tokenLoading, setTokenLoading] = useState(false)
+  const [pwForm, setPwForm] = useState({ current: '', newPw: '', confirm: '' })
+  const [pwError, setPwError] = useState('')
+  const [pwSuccess, setPwSuccess] = useState(false)
+  const [pwLoading, setPwLoading] = useState(false)
 
   const save = useMutation({
     mutationFn: (updates: Record<string, unknown>) => api.putConfig(updates),
@@ -82,26 +82,28 @@ export default function SettingsPage() {
     },
   })
 
-  async function revealToken() {
-    if (adminToken) {
-      setShowToken(!showToken)
+  async function handlePasswordChange(e: React.FormEvent) {
+    e.preventDefault()
+    setPwError('')
+    setPwSuccess(false)
+    if (pwForm.newPw.length < 8) {
+      setPwError('New password must be at least 8 characters.')
       return
     }
-    setTokenLoading(true)
-    try {
-      const res = await api.getAdminTokenFromServer()
-      setAdminToken(res.admin_token)
-      setShowToken(true)
-    } catch { /* ignore */ } finally {
-      setTokenLoading(false)
+    if (pwForm.newPw !== pwForm.confirm) {
+      setPwError('Passwords do not match.')
+      return
     }
-  }
-
-  function copyToken() {
-    if (adminToken) {
-      navigator.clipboard.writeText(adminToken)
-      setTokenCopied(true)
-      setTimeout(() => setTokenCopied(false), 2000)
+    setPwLoading(true)
+    try {
+      await api.changePassword(pwForm.current, pwForm.newPw)
+      setPwSuccess(true)
+      setPwForm({ current: '', newPw: '', confirm: '' })
+      setTimeout(() => setPwSuccess(false), 3000)
+    } catch {
+      setPwError('Current password is incorrect.')
+    } finally {
+      setPwLoading(false)
     }
   }
 
@@ -131,30 +133,47 @@ export default function SettingsPage() {
       {saved && <div className="bg-green-100 border border-green-300 text-green-800 px-4 py-2 rounded-lg mb-4">Settings saved.</div>}
 
       <form onSubmit={handleSubmit} className="space-y-6 max-w-2xl">
-        {/* Admin Token Card */}
+        {/* Change Password Card */}
         <div className="bg-white rounded-xl shadow p-6">
           <h3 className="text-sm font-semibold text-gray-900 mb-1 flex items-center gap-2">
-            <Shield size={16} className="text-blue-600" /> Admin Token
+            <Lock size={16} className="text-blue-600" /> Change Password
           </h3>
-          <p className="text-xs text-gray-500 mb-3">Use this token to log into the web UI from other devices or browsers.</p>
-          <div className="flex items-center gap-2">
-            <div className="flex-1 bg-gray-50 border rounded-lg px-3 py-2 text-sm font-mono truncate">
-              {showToken && adminToken ? adminToken : '••••••••••••••••••••••••'}
-            </div>
+          <p className="text-xs text-gray-500 mb-3">Update your login credentials for the web UI.</p>
+          {pwError && <div className="bg-red-50 border border-red-200 text-red-700 px-3 py-2 rounded-lg mb-3 text-xs">{pwError}</div>}
+          {pwSuccess && <div className="bg-green-100 border border-green-300 text-green-800 px-3 py-2 rounded-lg mb-3 text-xs">Password changed successfully.</div>}
+          <div className="space-y-3">
+            <input
+              type="password"
+              className="w-full border rounded-lg px-3 py-2 text-sm"
+              placeholder="Current password"
+              value={pwForm.current}
+              onChange={e => setPwForm(f => ({ ...f, current: e.target.value }))}
+              autoComplete="current-password"
+            />
+            <input
+              type="password"
+              className="w-full border rounded-lg px-3 py-2 text-sm"
+              placeholder="New password (min. 8 characters)"
+              value={pwForm.newPw}
+              onChange={e => setPwForm(f => ({ ...f, newPw: e.target.value }))}
+              autoComplete="new-password"
+            />
+            <input
+              type="password"
+              className="w-full border rounded-lg px-3 py-2 text-sm"
+              placeholder="Confirm new password"
+              value={pwForm.confirm}
+              onChange={e => setPwForm(f => ({ ...f, confirm: e.target.value }))}
+              autoComplete="new-password"
+            />
             <button
               type="button"
-              onClick={revealToken}
-              disabled={tokenLoading}
-              className="border rounded-lg p-2 hover:bg-gray-50 disabled:opacity-50"
-              title={showToken ? 'Hide' : 'Reveal'}
+              onClick={handlePasswordChange}
+              disabled={pwLoading || !pwForm.current || !pwForm.newPw || !pwForm.confirm}
+              className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50"
             >
-              {showToken ? <EyeOff size={16} className="text-gray-500" /> : <Eye size={16} className="text-gray-500" />}
+              {pwLoading ? 'Saving…' : 'Update Password'}
             </button>
-            {adminToken && (
-              <button type="button" onClick={copyToken} className="border rounded-lg p-2 hover:bg-gray-50" title="Copy to clipboard">
-                {tokenCopied ? <Check size={16} className="text-green-600" /> : <Copy size={16} className="text-gray-500" />}
-              </button>
-            )}
           </div>
         </div>
 

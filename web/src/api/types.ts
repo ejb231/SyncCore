@@ -95,6 +95,8 @@ export interface SetupPayload {
   sync_folder: string
   node_id: string
   peers: string
+  username: string
+  password: string
 }
 
 export interface AddPeerResponse {

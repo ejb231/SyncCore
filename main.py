@@ -91,9 +91,9 @@ def _print_banner(settings: Settings, first_run: bool) -> None:
     table.add_row("Sync folder", settings.sync_folder)
     table.add_row("Mode", "P2P bidirectional")
     if first_run:
-        table.add_row("Admin token", settings.admin_token)
+        table.add_row("Login", "[dim]set during setup[/dim]")
     else:
-        table.add_row("Admin token", settings.admin_token[:8] + "...")
+        table.add_row("Login", f"[dim]{settings.admin_username}[/dim]")
     if settings.peer_list:
         table.add_row("Peers", ", ".join(settings.peer_list))
     else:
@@ -328,9 +328,9 @@ def reset():
         console.print("  [dim]Nothing to remove - already clean.[/dim]")
 
 
-@cli.command(name="show-token")
-def show_token():
-    """Print the admin token for recovery when locked out of the web UI."""
+@cli.command(name="reset-password")
+def reset_password():
+    """Reset the admin password when locked out of the web UI."""
     settings, _, _, _ = _boot(quiet=True)
     if not settings.setup_complete:
         console.print(
@@ -338,8 +338,21 @@ def show_token():
             "  Run [bold]python main.py run[/bold] first.\n"
         )
         raise typer.Exit(1)
-    console.print(f"\n  [bold]Admin Token:[/bold]  {settings.admin_token}\n")
-    console.print("  [dim]Paste this into the web UI login page to sign in.[/dim]\n")
+    import getpass
+    from utils.auth import hash_password
+    from config import write_env
+
+    console.print(f"\n  [bold]Current username:[/bold]  {settings.admin_username}")
+    new_pw = getpass.getpass("  Enter new password (min 8 chars): ")
+    if len(new_pw) < 8:
+        console.print("  [red]Password must be at least 8 characters.[/red]\n")
+        raise typer.Exit(1)
+    confirm = getpass.getpass("  Confirm new password: ")
+    if new_pw != confirm:
+        console.print("  [red]Passwords do not match.[/red]\n")
+        raise typer.Exit(1)
+    write_env({"ADMIN_PASSWORD_HASH": hash_password(new_pw)})
+    console.print("  [green]Password updated successfully.[/green]\n")
 
 
 if __name__ == "__main__":

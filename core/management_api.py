@@ -13,7 +13,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from config import Settings, write_env
-from utils.auth import require_admin_token
+from utils.auth import require_admin_token, hash_password, verify_password
 from utils.certs import (
     create_pair_proof,
     ensure_certs,
@@ -85,7 +85,7 @@ async def get_status(request: Request):
 
 def _redact_settings(settings: Settings) -> dict[str, Any]:
     data = settings.model_dump()
-    for secret in ("api_key", "admin_token"):
+    for secret in ("api_key", "admin_token", "admin_password_hash"):
         if secret in data:
             data[secret] = "***"
     return data
@@ -134,6 +134,36 @@ async def get_admin_token_value(request: Request):
     """Return the raw admin token (for reveal / copy in the UI)."""
     settings: Settings = request.app.state.settings
     return {"admin_token": settings.admin_token}
+
+
+@router.post("/change-password", dependencies=[Depends(require_setup)])
+async def change_password(request: Request):
+    """Change the admin username and/or password."""
+    settings: Settings = request.app.state.settings
+    body = await request.json()
+    current_password = body.get("current_password", "")
+    new_password = body.get("new_password", "")
+    new_username = body.get("new_username", "").strip()
+
+    if not current_password or not verify_password(
+        current_password, settings.admin_password_hash
+    ):
+        raise HTTPException(status_code=401, detail="Current password is incorrect")
+    if not new_password or len(new_password) < 8:
+        raise HTTPException(
+            status_code=422, detail="New password must be at least 8 characters"
+        )
+
+    env_updates: dict[str, str] = {
+        "ADMIN_PASSWORD_HASH": hash_password(new_password),
+    }
+    if new_username:
+        env_updates["ADMIN_USERNAME"] = new_username
+
+    write_env(env_updates)
+    new_settings = Settings.reload()
+    request.app.state.settings = new_settings
+    return {"status": "ok"}
 
 
 # ---------------------------------------------------------------------------
@@ -593,17 +623,21 @@ async def setup_status(request: Request):
 
 @setup_router.post("/login")
 async def login(request: Request):
-    """Validate an admin token and return node info (for the login page)."""
+    """Validate username/password and return node info + admin token."""
     settings: Settings = request.app.state.settings
     if not settings.setup_complete:
         raise HTTPException(status_code=400, detail="Setup not complete")
     body = await request.json()
-    token = body.get("token", "").strip()
-    if not token or not hmac.compare_digest(
-        token.encode(), settings.admin_token.encode()
+    username = body.get("username", "").strip()
+    password = body.get("password", "")
+    if (
+        not username
+        or not password
+        or not hmac.compare_digest(username.encode(), settings.admin_username.encode())
+        or not verify_password(password, settings.admin_password_hash)
     ):
-        raise HTTPException(status_code=401, detail="Invalid admin token")
-    return {"status": "ok", "node_id": settings.node_id}
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    return {"status": "ok", "node_id": settings.node_id, "token": settings.admin_token}
 
 
 @setup_router.post("/setup")
@@ -635,6 +669,19 @@ async def initial_setup(request: Request):
             validate_folder_path(env_updates["SYNC_FOLDER"], label="sync_folder")
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc))
+
+    # Set up admin credentials (username + hashed password)
+    username = body.get("username", "").strip() or "admin"
+    password = body.get("password", "")
+    if not settings.setup_complete:
+        # First-time setup — password is required
+        if not password or len(password) < 8:
+            raise HTTPException(
+                status_code=422,
+                detail="Password must be at least 8 characters",
+            )
+        env_updates["ADMIN_USERNAME"] = username
+        env_updates["ADMIN_PASSWORD_HASH"] = hash_password(password)
 
     if "admin_token" not in env_updates:
         env_updates["ADMIN_TOKEN"] = settings.admin_token

@@ -1,9 +1,9 @@
 import { useState } from 'react'
 import { api, setAdminToken } from '../api/client'
-import { Rocket, FolderSync, Globe, User, Fingerprint } from 'lucide-react'
+import { Rocket, FolderSync, Globe, User, Fingerprint, Lock } from 'lucide-react'
 
 export default function SetupPage({ onComplete }: { onComplete: () => void }) {
-  const [form, setForm] = useState({ sync_folder: '', node_id: '', peers: '' })
+  const [form, setForm] = useState({ sync_folder: '', node_id: '', peers: '', username: 'admin', password: '', confirmPassword: '' })
   const [, setDeviceId] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
@@ -12,6 +12,18 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
     e.preventDefault()
     setLoading(true)
     setError('')
+
+    if (form.password.length < 8) {
+      setError('Password must be at least 8 characters.')
+      setLoading(false)
+      return
+    }
+    if (form.password !== form.confirmPassword) {
+      setError('Passwords do not match.')
+      setLoading(false)
+      return
+    }
+
     try {
       const res = await api.setup(form)
       setAdminToken(res.admin_token)
@@ -42,14 +54,54 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
         </div>
 
         <p className="text-sm text-gray-600 mt-3 mb-6 leading-relaxed">
-          Let's get you set up. All fields below are <strong>optional</strong> — sensible
-          defaults have already been configured. Just click <em>Start Syncing</em> to begin,
-          or customise the settings below.
+          Let's get you set up. Choose a <strong>username and password</strong> for the web UI,
+          then optionally customise the settings below.
         </p>
 
         {error && <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-2.5 rounded-lg mb-4 text-sm">{error}</div>}
 
         <form onSubmit={handleSubmit} className="space-y-5">
+          {/* Credentials */}
+          <div className="bg-blue-50 border border-blue-100 rounded-xl p-4 space-y-4">
+            <div>
+              <label className="flex items-center gap-1.5 text-sm font-medium text-gray-700 mb-1">
+                <User size={15} className="text-blue-500" /> Username
+              </label>
+              <input
+                className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-white"
+                placeholder="admin"
+                value={form.username}
+                onChange={e => setForm(f => ({ ...f, username: e.target.value }))}
+                autoComplete="username"
+              />
+            </div>
+            <div>
+              <label className="flex items-center gap-1.5 text-sm font-medium text-gray-700 mb-1">
+                <Lock size={15} className="text-blue-500" /> Password
+              </label>
+              <input
+                type="password"
+                className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-white"
+                placeholder="At least 8 characters"
+                value={form.password}
+                onChange={e => setForm(f => ({ ...f, password: e.target.value }))}
+                autoComplete="new-password"
+              />
+            </div>
+            <div>
+              <label className="flex items-center gap-1.5 text-sm font-medium text-gray-700 mb-1">
+                <Lock size={15} className="text-blue-500" /> Confirm Password
+              </label>
+              <input
+                type="password"
+                className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-white"
+                placeholder="Repeat your password"
+                value={form.confirmPassword}
+                onChange={e => setForm(f => ({ ...f, confirmPassword: e.target.value }))}
+                autoComplete="new-password"
+              />
+            </div>
+          </div>
           <div>
             <label className="flex items-center gap-1.5 text-sm font-medium text-gray-700 mb-1">
               <FolderSync size={15} className="text-blue-500" /> Sync Folder
@@ -91,7 +143,7 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
 
           <button
             type="submit"
-            disabled={loading}
+            disabled={loading || !form.password}
             className="w-full bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors text-base"
           >
             {loading ? 'Setting up…' : 'Start Syncing'}

@@ -16,11 +16,46 @@ backward compatibility but should be considered deprecated.
 from __future__ import annotations
 
 import base64
+import hashlib
 import hmac
+import os
 import time
 from urllib.parse import parse_qsl, urlencode
 
 from fastapi import Header, HTTPException, Request
+
+
+# ---------------------------------------------------------------------------
+# Password hashing (PBKDF2-SHA256)
+# ---------------------------------------------------------------------------
+
+_HASH_ALGO = "sha256"
+_HASH_ITERATIONS = 600_000
+_SALT_LENGTH = 32
+
+
+def hash_password(password: str) -> str:
+    """Hash a password using PBKDF2-SHA256 and return a storable string.
+
+    Format: ``pbkdf2:sha256:iterations$salt_hex$hash_hex``
+    """
+    salt = os.urandom(_SALT_LENGTH)
+    dk = hashlib.pbkdf2_hmac(_HASH_ALGO, password.encode(), salt, _HASH_ITERATIONS)
+    return f"pbkdf2:{_HASH_ALGO}:{_HASH_ITERATIONS}${salt.hex()}${dk.hex()}"
+
+
+def verify_password(password: str, password_hash: str) -> bool:
+    """Verify *password* against a hash produced by :func:`hash_password`."""
+    try:
+        method, salt_hex, hash_hex = password_hash.split("$", 2)
+        _, algo, iterations_str = method.split(":")
+        iterations = int(iterations_str)
+        salt = bytes.fromhex(salt_hex)
+        expected = bytes.fromhex(hash_hex)
+    except (ValueError, TypeError):
+        return False
+    dk = hashlib.pbkdf2_hmac(algo, password.encode(), salt, iterations)
+    return hmac.compare_digest(dk, expected)
 
 
 def _safe_compare(a: str, b: str) -> bool:

@@ -86,10 +86,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
-  login: (token: string) =>
-    request<{ status: string; node_id: string }>('/api/v1/login', {
+  login: (username: string, password: string) =>
+    request<{ status: string; node_id: string; token: string }>('/api/v1/login', {
       method: 'POST',
-      body: JSON.stringify({ token }),
+      body: JSON.stringify({ username, password }),
     }),
   // Trust management (certificate-based peer identity)
   getTrust: () =>
@@ -110,6 +110,11 @@ export const api = {
     request<{ status: string }>(`/api/v1/trust?device_id=${encodeURIComponent(device_id)}`, { method: 'DELETE' }),
   getAdminTokenFromServer: () =>
     request<{ admin_token: string }>('/api/v1/admin-token'),
+  changePassword: (current_password: string, new_password: string, new_username?: string) =>
+    request<{ status: string }>('/api/v1/change-password', {
+      method: 'POST',
+      body: JSON.stringify({ current_password, new_password, ...(new_username ? { new_username } : {}) }),
+    }),
   discoverPeers: () =>
     request<{ url: string; node_id: string; device_id: string; ip: string; last_seen: number }[]>('/api/v1/discover'),
 }

@@ -44,12 +44,12 @@ python main.py run
 ```
 
 That's it. On first launch SyncCore will:
-- Generate a secure configuration file (`.env`) with random admin token and node ID
+- Generate a secure configuration file (`.env`) with a random node ID
 - Generate a 2048-bit RSA key pair and self-signed TLS certificate (no OpenSSL needed)
 - Create a unique device identity (SHA-256 fingerprint of the certificate)
 - Open your browser to the setup wizard
 
-Your admin token and dashboard URL are printed in the terminal — use them to log in.
+The setup wizard will ask you to choose a **username and password** for the web dashboard.
 
 ### Starting fresh
 
@@ -72,6 +72,7 @@ python main.py run
 | `python main.py run --no-browser` | Start without auto-opening the browser |
 | `python main.py status` | Show node info and queue depth |
 | `python main.py reset` | Delete config and certificates to start fresh |
+| `python main.py reset-password` | Reset the admin password when locked out |
 | `python main.py --version` | Show version and exit |
 
 ---
@@ -80,7 +81,7 @@ python main.py run
 
 Open **https://localhost:8443** in your browser after starting SyncCore.
 
-On first visit you'll see the **Setup** wizard to configure your sync folder and admin token. After setup, log in via the **Login** page using your admin token.
+On first visit you'll see the **Setup** wizard to configure your sync folder and create your login credentials. After setup, sign in with your **username and password**.
 
 | Page | What you can do |
 |---|---|
@@ -105,7 +106,9 @@ All settings live in a `.env` file that is auto-generated on first run (file per
 | `API_KEY` | *(auto-generated)* | Legacy shared secret (deprecated — use certificate pairing instead) |
 | `NODE_ID` | *(auto-generated)* | A short name for this machine |
 | `PEERS` | *(empty)* | Comma-separated URLs of other SyncCore nodes |
-| `ADMIN_TOKEN` | *(auto-generated)* | Bearer token for the web dashboard and management API |
+| `ADMIN_TOKEN` | *(auto-generated)* | Internal bearer token for API authentication (managed automatically) |
+| `ADMIN_USERNAME` | `admin` | Username for the web dashboard login |
+| `ADMIN_PASSWORD_HASH` | *(empty)* | PBKDF2-SHA256 hash of the admin password (set during setup) |
 | `LOG_LEVEL` | `INFO` | How verbose the logs are (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 | `MAX_PEERS` | `20` | Maximum number of connected nodes |
 | `MAX_UPLOAD_MB` | `500` | Maximum file size accepted per upload (in MB) |
@@ -159,8 +162,8 @@ python main.py run
 - **Trust store** — approved peer identities are stored in `trusted_peers.json`. You can revoke any peer at any time from the dashboard.
 - **Request signing** — sync requests include `X-Device-ID`, `X-Timestamp`, and `X-Signature` headers. Signatures use RSA-PSS with a 5-minute timestamp window to prevent replay attacks.
 - **TLS everywhere** — all peer communication uses HTTPS with auto-generated self-signed certificates. Set `VERIFY_TLS=true` when all nodes share a CA for full certificate validation.
-- **Admin token** — the web dashboard and management API require an `Authorization: Bearer <token>` header. The token is printed in full only on first run, then truncated in logs.
-- **Constant-time auth** — all token/key comparisons use `hmac.compare_digest` to prevent timing attacks.
+- **Username/password login** — the web dashboard requires a username and password set during initial setup. Credentials are hashed with PBKDF2-SHA256 (600,000 iterations) before storage. An internal bearer token is used for API sessions but is never exposed to the user.
+- **Constant-time auth** — all credential comparisons use `hmac.compare_digest` to prevent timing attacks.
 - **Private key protection** — TLS private keys and `.env` are restricted to the current user (`icacls` on Windows, `chmod 600` on Unix).
 - **Upload rate limiting** — 60 uploads per minute per IP to prevent abuse.
 - **Gzip bomb protection** — decompressed uploads are capped at the configured `MAX_UPLOAD_MB`.
@@ -228,7 +231,7 @@ SyncCore/
 │   ├── orchestrator.py    # Component lifecycle + supervised threads
 │   └── ws.py              # WebSocket manager
 ├── utils/
-│   ├── auth.py            # Certificate signature + bearer token auth
+│   ├── auth.py            # Certificate signature + password auth
 │   ├── certs.py           # TLS certs, RSA key pair, request signing
 │   ├── trust_store.py     # Certificate-pinned peer trust store
 │   ├── discovery.py       # LAN auto-discovery via UDP multicast

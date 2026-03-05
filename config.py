@@ -132,6 +132,8 @@ class Settings(BaseSettings):
     syncignore_path: str = str(_BASE_DIR / ".syncignore")
     max_peers: int = 20
     admin_token: str = secrets.token_urlsafe(32)
+    admin_username: str = "admin"
+    admin_password_hash: str = ""
     setup_complete: bool = False
     debug: bool = False
     max_upload_mb: int = 500
