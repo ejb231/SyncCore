@@ -93,9 +93,9 @@ class PeerManager:
             self._peers[url] = PeerRecord(url=url, node_id="static")
             log.info("Static peer loaded: %s", url)
 
-    def _auth_headers(self, method: str, path: str) -> dict[str, str]:
+    def _auth_headers(self, method: str, path: str, query: str = "") -> dict[str, str]:
         """Generate cert-based auth headers for an outgoing request."""
-        return sign_request(self._key_path, self._device_id, method, path)
+        return sign_request(self._key_path, self._device_id, method, path, query)
 
     def _make_http_client(self) -> httpx.Client:
         """Create a fresh httpx client (or return the injected factory)."""
@@ -110,7 +110,6 @@ class PeerManager:
         return httpx.Client(
             timeout=10.0,
             verify=verify,
-            headers={"x-api-key": self.settings.api_key},
         )
 
     def _ensure_http(self) -> httpx.Client:

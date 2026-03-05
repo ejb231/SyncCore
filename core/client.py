@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 import ssl
 from pathlib import Path
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlencode, urljoin, urlparse
 
 import httpx
 
@@ -51,7 +51,6 @@ class SyncClient:
         self._client = httpx.Client(
             timeout=60.0,
             verify=_make_ssl_ctx(settings.ssl_cert, verify=verify_tls),
-            headers={"x-api-key": settings.api_key},  # legacy fallback
         )
         if not verify_tls:
             log.info("TLS verification disabled (self-signed certs)")
@@ -59,9 +58,9 @@ class SyncClient:
             settings.peer_list if settings.peer_list else [settings.server_url]
         )
 
-    def _auth_headers(self, method: str, path: str) -> dict[str, str]:
+    def _auth_headers(self, method: str, path: str, query: str = "") -> dict[str, str]:
         """Generate certificate-based authentication headers for a request."""
-        return sign_request(self._key_path, self._device_id, method, path)
+        return sign_request(self._key_path, self._device_id, method, path, query)
 
     @property
     def device_id(self) -> str:
@@ -130,8 +129,9 @@ class SyncClient:
         for target in self.targets:
             url = urljoin(target, "/delete")
             path = urlparse(url).path
+            query = urlencode([("path", relative_path)])
             try:
-                headers = self._auth_headers("DELETE", path)
+                headers = self._auth_headers("DELETE", path, query)
                 resp = self._client.delete(
                     url, params={"path": relative_path}, headers=headers
                 )
@@ -170,8 +170,9 @@ class SyncClient:
         """
         url = urljoin(target, "/download")
         url_path = urlparse(url).path
+        query = urlencode([("path", relative_path)])
         try:
-            headers = self._auth_headers("GET", url_path)
+            headers = self._auth_headers("GET", url_path, query)
             resp = self._client.get(
                 url, params={"path": relative_path}, headers=headers
             )

@@ -128,6 +128,22 @@ def get_device_id(cert_path: str | Path) -> str:
     return "-".join(chunks)
 
 
+def get_device_id_from_pem(cert_pem: str | bytes) -> str:
+    """Compute the Device ID from PEM-encoded certificate content.
+
+    Unlike :func:`get_device_id`, this accepts the PEM data directly
+    rather than a file path — useful during pairing when the certificate
+    is fetched over the network.
+    """
+    if isinstance(cert_pem, str):
+        cert_pem = cert_pem.encode()
+    cert = x509.load_pem_x509_certificate(cert_pem)
+    fingerprint = cert.fingerprint(hashes.SHA256())
+    hex_str = fingerprint.hex().upper()
+    chunks = [hex_str[i : i + 8] for i in range(0, 32, 8)]
+    return "-".join(chunks)
+
+
 def get_public_key_pem(cert_path: str | Path) -> str:
     """Extract the PEM-encoded public key from a certificate file."""
     cert_pem = Path(cert_path).read_bytes()
@@ -148,14 +164,19 @@ def get_public_key_pem(cert_path: str | Path) -> str:
 
 
 def sign_request(
-    key_path: str | Path, device_id: str, method: str, path: str
+    key_path: str | Path,
+    device_id: str,
+    method: str,
+    path: str,
+    query: str = "",
 ) -> dict[str, str]:
     """Produce authentication headers for an outgoing peer request.
 
     Returns a dict with ``X-Device-ID``, ``X-Timestamp``, and ``X-Signature``.
+    The signed message covers the method, path, and sorted query string.
     """
     timestamp = str(int(time.time()))
-    message = f"{device_id}:{timestamp}:{method.upper()}:{path}".encode()
+    message = f"{device_id}:{timestamp}:{method.upper()}:{path}:{query}".encode()
 
     key_pem = Path(key_path).read_bytes()
     private_key = serialization.load_pem_private_key(key_pem, password=None)
@@ -193,3 +214,38 @@ def verify_signature(public_key_pem: str, message: bytes, signature: bytes) -> b
         return True
     except Exception:
         return False
+
+
+# ---------------------------------------------------------------------------
+# Proof-of-possession for pairing requests
+# ---------------------------------------------------------------------------
+
+
+def create_pair_proof(key_path: str | Path, device_id: str) -> str:
+    """Sign the device ID to prove ownership of the corresponding private key.
+
+    The remote peer verifies this proof before accepting a pairing request,
+    preventing identity spoofing.
+    """
+    message = f"pair-proof:{device_id}".encode()
+    key_pem = Path(key_path).read_bytes()
+    private_key = serialization.load_pem_private_key(key_pem, password=None)
+    sig = private_key.sign(
+        message,
+        _padding.PSS(
+            mgf=_padding.MGF1(hashes.SHA256()),
+            salt_length=_padding.PSS.MAX_LENGTH,
+        ),
+        hashes.SHA256(),
+    )
+    return base64.b64encode(sig).decode()
+
+
+def verify_pair_proof(public_key_pem: str, device_id: str, proof: str) -> bool:
+    """Verify a proof-of-possession signature from a pairing request."""
+    message = f"pair-proof:{device_id}".encode()
+    try:
+        sig = base64.b64decode(proof)
+    except Exception:
+        return False
+    return verify_signature(public_key_pem, message, sig)

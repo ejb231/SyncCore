@@ -55,5 +55,25 @@ def compress(data: bytes) -> bytes:
     return gzip.compress(data)
 
 
-def decompress(data: bytes) -> bytes:
-    return gzip.decompress(data)
+# Maximum decompressed size — matches default max_upload_mb of 500 MB.
+MAX_DECOMPRESSED_BYTES = 500 * 1024 * 1024
+
+
+def decompress(data: bytes, max_size: int = MAX_DECOMPRESSED_BYTES) -> bytes:
+    """Decompress gzip data with a size limit to prevent gzip bombs."""
+    import io
+
+    with gzip.GzipFile(fileobj=io.BytesIO(data)) as f:
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = f.read(BUF_SIZE)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > max_size:
+                raise ValueError(
+                    f"Decompressed data exceeds {max_size // (1024 * 1024)} MB limit"
+                )
+            chunks.append(chunk)
+    return b"".join(chunks)

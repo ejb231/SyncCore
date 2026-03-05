@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import secrets
 import sys
 import uuid
@@ -84,6 +85,32 @@ def bootstrap_env() -> bool:
     )
     body = "\n".join(f"{k}={v}" for k, v in defaults.items()) + "\n"
     env_path.write_text(header + body, encoding="utf-8")
+
+    # Restrict .env permissions — the file contains API key & admin token
+    import platform as _platform
+
+    if _platform.system() == "Windows":
+        try:
+            _user = os.environ.get("USERNAME", "")
+            if _user:
+                import subprocess
+
+                subprocess.run(
+                    [
+                        "icacls",
+                        str(env_path),
+                        "/inheritance:r",
+                        "/grant:r",
+                        f"{_user}:(F)",
+                    ],
+                    capture_output=True,
+                    timeout=10,
+                )
+        except Exception:
+            pass
+    else:
+        os.chmod(str(env_path), 0o600)
+
     load_dotenv(env_path, override=True)
     return True
 

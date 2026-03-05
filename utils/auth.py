@@ -18,6 +18,7 @@ from __future__ import annotations
 import base64
 import hmac
 import time
+from urllib.parse import parse_qsl, urlencode
 
 from fastapi import Header, HTTPException, Request
 
@@ -25,6 +26,13 @@ from fastapi import Header, HTTPException, Request
 def _safe_compare(a: str, b: str) -> bool:
     """Constant-time string comparison to prevent timing attacks."""
     return hmac.compare_digest(a.encode(), b.encode())
+
+
+def _canonical_query(raw: str) -> str:
+    """Sort query parameters for a canonical signature representation."""
+    if not raw:
+        return ""
+    return urlencode(sorted(parse_qsl(raw, keep_blank_values=True)))
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +102,8 @@ async def _verify_device_signature(
 
     method = request.method
     path = request.url.path
-    message = f"{device_id}:{timestamp_str}:{method}:{path}".encode()
+    query = _canonical_query(request.url.query)
+    message = f"{device_id}:{timestamp_str}:{method}:{path}:{query}".encode()
 
     try:
         signature = base64.b64decode(signature_b64)

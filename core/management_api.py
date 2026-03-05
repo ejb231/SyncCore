@@ -3,16 +3,24 @@
 from __future__ import annotations
 
 import hmac
+import ssl
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from config import Settings, write_env
 from utils.auth import require_admin_token
-from utils.certs import ensure_certs, get_device_id, get_public_key_pem
+from utils.certs import (
+    create_pair_proof,
+    ensure_certs,
+    get_device_id,
+    get_device_id_from_pem,
+    get_public_key_pem,
+)
 from utils.filters import SyncIgnore
 from utils.logging import get_log_buffer, get_logger
 from utils.paths import validate_folder_path
@@ -274,6 +282,27 @@ async def add_peer(request: Request):
     if not all([remote_device_id, remote_node_id, remote_pubkey]):
         raise HTTPException(status_code=502, detail="Peer returned incomplete identity")
 
+    # Verify TLS certificate matches claimed identity (MITM detection)
+    try:
+        parsed_url = urlparse(url)
+        tls_cert_pem = ssl.get_server_certificate(
+            (parsed_url.hostname, parsed_url.port or 443)
+        )
+        tls_device_id = get_device_id_from_pem(tls_cert_pem)
+        if tls_device_id != remote_device_id:
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    f"TLS certificate does not match claimed identity "
+                    f"(cert={tls_device_id}, claimed={remote_device_id}). "
+                    f"Possible man-in-the-middle attack."
+                ),
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.warning("Could not verify TLS cert for %s: %s", url, exc)
+
     # Trust the remote immediately (the admin chose to add it)
     ts.trust_peer(remote_device_id, url, remote_node_id, remote_pubkey)
 
@@ -283,6 +312,7 @@ async def add_peer(request: Request):
     # Send our identity as a pairing request so the remote can approve us
     my_device_id = get_device_id(settings.ssl_cert)
     my_pubkey = get_public_key_pem(settings.ssl_cert)
+    my_proof = create_pair_proof(settings.ssl_key, my_device_id)
     mutual_ok = False
     mutual_msg = ""
     try:
@@ -293,6 +323,7 @@ async def add_peer(request: Request):
                 "node_id": settings.node_id,
                 "url": settings.server_url,
                 "public_key_pem": my_pubkey,
+                "proof": my_proof,
             },
         )
         if resp.status_code == 200:
@@ -391,6 +422,7 @@ async def approve_peer(request: Request):
     settings: Settings = request.app.state.settings
     my_device_id = get_device_id(settings.ssl_cert)
     my_pubkey = get_public_key_pem(settings.ssl_cert)
+    my_proof = create_pair_proof(settings.ssl_key, my_device_id)
     mutual_ok = False
     mutual_msg = ""
     try:
@@ -407,6 +439,7 @@ async def approve_peer(request: Request):
                 "node_id": settings.node_id,
                 "url": settings.server_url,
                 "public_key_pem": my_pubkey,
+                "proof": my_proof,
             },
         )
         if resp.status_code == 200:

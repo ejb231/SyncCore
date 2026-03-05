@@ -49,7 +49,7 @@ _upload_limiter = RateLimiter(window=60.0, limit=60)
 # fetch() calls with "NetworkError when attempting to fetch resource".
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -219,7 +219,10 @@ async def upload_file(
             )
 
         if compressed == "true":
-            data = decompress(data)
+            try:
+                data = decompress(data)
+            except ValueError as exc:
+                raise HTTPException(status_code=413, detail=str(exc))
 
         incoming_hash = hash_bytes(data)
 
@@ -326,11 +329,21 @@ async def pair_request(request: Request):
     node_id = body.get("node_id", "").strip()
     url = body.get("url", "").strip()
     public_key_pem = body.get("public_key_pem", "").strip()
+    proof = body.get("proof", "").strip()
 
-    if not all([device_id, node_id, url, public_key_pem]):
+    if not all([device_id, node_id, url, public_key_pem, proof]):
         raise HTTPException(
             status_code=422,
-            detail="device_id, node_id, url, and public_key_pem are required",
+            detail="device_id, node_id, url, public_key_pem, and proof are required",
+        )
+
+    # Verify proof-of-possession: caller must prove they hold the private key
+    from utils.certs import verify_pair_proof
+
+    if not verify_pair_proof(public_key_pem, device_id, proof):
+        raise HTTPException(
+            status_code=403,
+            detail="Invalid proof of key ownership \u2014 possible identity spoofing",
         )
 
     trust_store = getattr(request.app.state, "trust_store", None)
