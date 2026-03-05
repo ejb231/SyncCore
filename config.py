@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 
 def get_app_dir() -> Path:
