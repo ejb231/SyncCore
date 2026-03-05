@@ -71,6 +71,7 @@ def bootstrap_env() -> bool:
         "SSL_CERT": str(_BASE_DIR / "cert.pem"),
         "SSL_KEY": str(_BASE_DIR / "key.pem"),
         "DB_PATH": str(_BASE_DIR / "data" / "sync.db"),
+        "TRUST_STORE_PATH": str(_BASE_DIR / "data" / "trusted_peers.json"),
         "LOG_LEVEL": "INFO",
         "MAX_PEERS": "20",
         "ADMIN_TOKEN": secrets.token_urlsafe(32),
@@ -99,6 +100,7 @@ class Settings(BaseSettings):
     ssl_cert: str = str(_BASE_DIR / "cert.pem")
     ssl_key: str = str(_BASE_DIR / "key.pem")
     db_path: str = str(_BASE_DIR / "data" / "sync.db")
+    trust_store_path: str = str(_BASE_DIR / "data" / "trusted_peers.json")
     log_level: str = "INFO"
     syncignore_path: str = str(_BASE_DIR / ".syncignore")
     max_peers: int = 20

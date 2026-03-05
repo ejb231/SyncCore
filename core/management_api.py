@@ -2,18 +2,17 @@
 
 from __future__ import annotations
 
-import base64
 import hmac
-import json
 import time
 from pathlib import Path
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from config import Settings, write_env
 from utils.auth import require_admin_token
-from utils.certs import ensure_certs
+from utils.certs import ensure_certs, get_device_id, get_public_key_pem
 from utils.filters import SyncIgnore
 from utils.logging import get_log_buffer, get_logger
 from utils.paths import validate_folder_path
@@ -53,11 +52,18 @@ async def get_status(request: Request):
     settings: Settings = request.app.state.settings
     db = _get(request, "db")
     pm = getattr(request.app.state, "peer_manager", None)
+    ts = getattr(request.app.state, "trust_store", None)
+    device_id = (
+        get_device_id(settings.ssl_cert) if Path(settings.ssl_cert).is_file() else None
+    )
     return {
         "node_id": settings.node_id,
+        "device_id": device_id,
         "sync_folder": settings.sync_folder,
         "port": settings.port,
         "peer_count": len(pm.all_peers) if pm else 0,
+        "trusted_peers": len(ts.trusted_peers) if ts else 0,
+        "pending_approvals": len(ts.pending_requests) if ts else 0,
         "indexed_files": db.file_count(),
         "pending_queue": db.pending_count(),
         "uptime": time.time() - _start_time,
@@ -233,29 +239,70 @@ async def list_peers(request: Request):
 
 @router.post("/peers", dependencies=[Depends(require_setup)])
 async def add_peer(request: Request):
+    """Add a peer by URL — fetches its identity automatically.
+
+    This starts a pairing flow: we fetch the remote's identity, trust it
+    immediately (the admin explicitly requested this), and send our own
+    identity as a pairing request so the remote can approve us.
+    """
     body = await request.json()
-    url = body.get("url", "").strip()
+    url = body.get("url", "").strip().rstrip("/")
     if not url:
         raise HTTPException(status_code=422, detail="url is required")
-    pm = getattr(request.app.state, "peer_manager", None)
-    if pm is None:
-        raise HTTPException(status_code=503, detail="Peer manager not available")
-    ok, msg = pm.register(url, body.get("node_id", "manual"), requester_ip="admin")
-    if not ok:
-        raise HTTPException(status_code=400, detail=msg)
 
-    # Mutual registration: tell the remote node about us
     settings: Settings = request.app.state.settings
+    ts = getattr(request.app.state, "trust_store", None)
+    pm = getattr(request.app.state, "peer_manager", None)
+    if ts is None or pm is None:
+        raise HTTPException(status_code=503, detail="Not ready")
+
+    # Fetch the remote peer's identity
+    try:
+        http = pm._ensure_http()
+        resp = http.get(url + "/identity")
+        resp.raise_for_status()
+        remote = resp.json()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not fetch peer identity: {exc}",
+        )
+
+    remote_device_id = remote.get("device_id", "")
+    remote_node_id = remote.get("node_id", "")
+    remote_pubkey = remote.get("public_key_pem", "")
+    if not all([remote_device_id, remote_node_id, remote_pubkey]):
+        raise HTTPException(status_code=502, detail="Peer returned incomplete identity")
+
+    # Trust the remote immediately (the admin chose to add it)
+    ts.trust_peer(remote_device_id, url, remote_node_id, remote_pubkey)
+
+    # Register in the peer manager
+    pm.register_skip_verify(url, remote_node_id)
+
+    # Send our identity as a pairing request so the remote can approve us
+    my_device_id = get_device_id(settings.ssl_cert)
+    my_pubkey = get_public_key_pem(settings.ssl_cert)
     mutual_ok = False
     mutual_msg = ""
     try:
-        http = pm._ensure_http()
         resp = http.post(
-            url.rstrip("/") + "/peers/register",
-            json={"url": settings.server_url, "node_id": settings.node_id},
+            url + "/pair/request",
+            json={
+                "device_id": my_device_id,
+                "node_id": settings.node_id,
+                "url": settings.server_url,
+                "public_key_pem": my_pubkey,
+            },
         )
-        mutual_ok = resp.status_code == 200
-        if not mutual_ok:
+        if resp.status_code == 200:
+            result = resp.json()
+            mutual_ok = result.get("status") in ("pending", "already_trusted")
+            if result.get("status") == "already_trusted":
+                mutual_msg = "Already trusted by remote"
+            else:
+                mutual_msg = "Pairing request sent — waiting for remote approval"
+        else:
             mutual_msg = f"Remote returned HTTP {resp.status_code}"
     except Exception as exc:
         mutual_msg = str(exc)
@@ -263,6 +310,8 @@ async def add_peer(request: Request):
     return {
         "status": "added",
         "url": url,
+        "device_id": remote_device_id,
+        "node_id": remote_node_id,
         "mutual": mutual_ok,
         "mutual_message": mutual_msg,
     }
@@ -278,98 +327,167 @@ async def remove_peer(request: Request, url: str):
 
 
 # ---------------------------------------------------------------------------
-# Invite codes
+# Trust management (certificate-based peer identity)
 # ---------------------------------------------------------------------------
 
 
-@router.post("/invite/generate", dependencies=[Depends(require_setup)])
-async def generate_invite(request: Request):
-    """Generate a time-limited invite code for painless peer pairing."""
-    settings: Settings = request.app.state.settings
-    payload = {
-        "url": settings.server_url,
-        "api_key": settings.api_key,
-        "node_id": settings.node_id,
-        "expires": time.time() + 3600,
+@router.get("/trust", dependencies=[Depends(require_setup)])
+async def list_trusted(request: Request):
+    """Return all trusted peers and pending approval requests."""
+    ts = getattr(request.app.state, "trust_store", None)
+    if ts is None:
+        return {"trusted": [], "pending": []}
+    return {
+        "trusted": ts.trusted_peers,
+        "pending": ts.pending_requests,
     }
-    code = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
-    return {"invite_code": code, "expires_in": 3600}
 
 
-@router.post("/invite/accept", dependencies=[Depends(require_setup)])
-async def accept_invite(request: Request):
-    """Accept an invite code and establish mutual peering."""
-    body = await request.json()
-    code = body.get("code", "").strip()
-    if not code:
-        raise HTTPException(status_code=422, detail="Invite code is required")
-
-    # Decode the invite (add padding back for base64)
-    try:
-        padded = code + "=" * (-len(code) % 4)
-        payload = json.loads(base64.urlsafe_b64decode(padded))
-    except Exception:
-        raise HTTPException(status_code=422, detail="Invalid invite code format")
-
-    if payload.get("expires", 0) < time.time():
-        raise HTTPException(status_code=410, detail="Invite code has expired")
-
-    peer_url = payload.get("url", "").strip().rstrip("/")
-    peer_api_key = payload.get("api_key", "").strip()
-    peer_node_id = payload.get("node_id", "unknown")
-
-    if not peer_url:
-        raise HTTPException(status_code=422, detail="Invite code missing peer URL")
-    if not peer_api_key:
-        raise HTTPException(status_code=422, detail="Invite code missing API key")
-
+@router.get("/trust/identity", dependencies=[Depends(require_setup)])
+async def get_my_identity(request: Request):
+    """Return this node's Device ID and public key."""
     settings: Settings = request.app.state.settings
+    device_id = get_device_id(settings.ssl_cert)
+    public_key = get_public_key_pem(settings.ssl_cert)
+    return {
+        "device_id": device_id,
+        "node_id": settings.node_id,
+        "public_key_pem": public_key,
+    }
+
+
+@router.post("/trust/approve", dependencies=[Depends(require_setup)])
+async def approve_peer(request: Request):
+    """Approve a pending pairing request.
+
+    After approval, we also send our identity to the remote peer so it can
+    trust us back (completing the mutual trust handshake).
+    """
+    body = await request.json()
+    device_id = body.get("device_id", "").strip()
+    if not device_id:
+        raise HTTPException(status_code=422, detail="device_id is required")
+
+    ts = getattr(request.app.state, "trust_store", None)
     pm = getattr(request.app.state, "peer_manager", None)
-    if pm is None:
-        raise HTTPException(status_code=503, detail="Peer manager not available")
+    if ts is None:
+        raise HTTPException(status_code=503, detail="Trust store not available")
 
-    # Update our API key to match the peer's so sync traffic is authenticated
-    api_key_changed = False
-    if settings.api_key != peer_api_key:
-        write_env({"API_KEY": peer_api_key})
-        new_settings = Settings.reload()
-        request.app.state.settings = new_settings
-        pm.settings = new_settings
-        pm._http = pm._make_http_client()
-        orch = getattr(request.app.state, "orchestrator", None)
-        if orch:
-            orch.reconfigure(new_settings)
-        settings = new_settings
-        api_key_changed = True
-
-    # Register the peer locally (trusted via invite — skip verification)
-    ok, msg = pm.register_skip_verify(peer_url, peer_node_id)
+    ok = ts.approve_pending(device_id)
     if not ok:
-        raise HTTPException(status_code=400, detail=msg)
+        raise HTTPException(
+            status_code=404, detail="No pending request for this device"
+        )
 
-    # Mutual registration: tell the remote about us
+    peer = ts.get_peer(device_id)
+    if not peer:
+        return {"status": "approved", "mutual": False, "mutual_message": ""}
+
+    # Register in peer manager
+    if pm:
+        pm.register_skip_verify(peer["url"], peer["node_id"])
+
+    # Send our identity to the remote so it trusts us back
+    settings: Settings = request.app.state.settings
+    my_device_id = get_device_id(settings.ssl_cert)
+    my_pubkey = get_public_key_pem(settings.ssl_cert)
     mutual_ok = False
     mutual_msg = ""
     try:
-        http = pm._ensure_http()
+        if pm:
+            http = pm._ensure_http()
+        else:
+            http = httpx.Client(timeout=10, verify=False)
+
+        # Send a pairing request first (in case the remote doesn't trust us yet)
         resp = http.post(
-            peer_url + "/peers/register",
-            json={"url": settings.server_url, "node_id": settings.node_id},
+            peer["url"].rstrip("/") + "/pair/request",
+            json={
+                "device_id": my_device_id,
+                "node_id": settings.node_id,
+                "url": settings.server_url,
+                "public_key_pem": my_pubkey,
+            },
         )
-        mutual_ok = resp.status_code == 200
-        if not mutual_ok:
+        if resp.status_code == 200:
+            result = resp.json()
+            if result.get("status") == "already_trusted":
+                mutual_ok = True
+                mutual_msg = "Already trusted by remote"
+            else:
+                mutual_msg = "Pairing request sent to remote — they may need to approve"
+        else:
             mutual_msg = f"Remote returned HTTP {resp.status_code}"
     except Exception as exc:
-        mutual_msg = str(exc)
+        mutual_msg = f"Could not reach remote: {exc}"
+
+    from core.ws import ws_manager
+    import asyncio
+
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            asyncio.ensure_future(
+                ws_manager.broadcast(
+                    {
+                        "event": "peer_trusted",
+                        "data": {
+                            "device_id": device_id,
+                            "node_id": peer.get("node_id", ""),
+                            "url": peer.get("url", ""),
+                        },
+                    }
+                )
+            )
+    except Exception:
+        pass
 
     return {
-        "status": "connected",
-        "peer_url": peer_url,
-        "peer_node_id": peer_node_id,
-        "api_key_updated": api_key_changed,
+        "status": "approved",
+        "device_id": device_id,
         "mutual": mutual_ok,
         "mutual_message": mutual_msg,
     }
+
+
+@router.post("/trust/reject", dependencies=[Depends(require_setup)])
+async def reject_peer(request: Request):
+    """Reject a pending pairing request."""
+    body = await request.json()
+    device_id = body.get("device_id", "").strip()
+    if not device_id:
+        raise HTTPException(status_code=422, detail="device_id is required")
+
+    ts = getattr(request.app.state, "trust_store", None)
+    if ts is None:
+        raise HTTPException(status_code=503, detail="Trust store not available")
+
+    ok = ts.reject_pending(device_id)
+    if not ok:
+        raise HTTPException(
+            status_code=404, detail="No pending request for this device"
+        )
+    return {"status": "rejected", "device_id": device_id}
+
+
+@router.delete("/trust", dependencies=[Depends(require_setup)])
+async def revoke_trust(request: Request, device_id: str):
+    """Remove a peer from the trusted set."""
+    ts = getattr(request.app.state, "trust_store", None)
+    pm = getattr(request.app.state, "peer_manager", None)
+    if ts is None:
+        raise HTTPException(status_code=503, detail="Trust store not available")
+
+    peer = ts.get_peer(device_id)
+    ok = ts.revoke_peer(device_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Device not found in trust store")
+
+    # Also remove from peer manager
+    if pm and peer:
+        pm.remove(peer.get("url", ""))
+
+    return {"status": "revoked", "device_id": device_id}
 
 
 # ---------------------------------------------------------------------------
@@ -475,7 +593,7 @@ async def initial_setup(request: Request):
     body = await request.json()
 
     env_updates: dict[str, str] = {}
-    for key in ("sync_folder", "api_key", "node_id", "peers", "port", "server_url"):
+    for key in ("sync_folder", "node_id", "peers", "port", "server_url"):
         if key in body and body[key]:
             env_updates[key.upper()] = str(body[key])
 
@@ -500,8 +618,15 @@ async def initial_setup(request: Request):
     if orch:
         orch.reconfigure(new_settings)
 
+    device_id = (
+        get_device_id(new_settings.ssl_cert)
+        if Path(new_settings.ssl_cert).is_file()
+        else None
+    )
+
     return {
         "status": "ok",
         "node_id": new_settings.node_id,
         "admin_token": new_settings.admin_token,
+        "device_id": device_id,
     }

@@ -1,5 +1,6 @@
 import type {
   StatusResponse, ConfigResponse, FileEntry, Conflict, Peer, QueueTask, LogEntry, SetupPayload,
+  TrustListResponse, IdentityResponse, AddPeerResponse, ApprovePeerResponse,
 } from './types'
 
 let adminToken = localStorage.getItem('adminToken') || ''
@@ -70,7 +71,7 @@ export const api = {
   resumeQueue: () => request<{ status: string }>('/api/v1/queue/resume', { method: 'POST' }),
   getPeers: () => request<Peer[]>('/api/v1/peers'),
   addPeer: (url: string, node_id?: string) =>
-    request<{ status: string }>('/api/v1/peers', { method: 'POST', body: JSON.stringify({ url, node_id }) }),
+    request<AddPeerResponse>('/api/v1/peers', { method: 'POST', body: JSON.stringify({ url, node_id }) }),
   removePeer: (url: string) =>
     request<{ status: string }>(`/api/v1/peers?url=${encodeURIComponent(url)}`, { method: 'DELETE' }),
   getIgnore: () => request<{ content: string }>('/api/v1/ignore'),
@@ -81,7 +82,7 @@ export const api = {
     return request<LogEntry[]>(`/api/v1/logs${q}`)
   },
   setup: (payload: SetupPayload) =>
-    request<{ status: string; node_id: string; admin_token: string }>('/api/v1/setup', {
+    request<{ status: string; node_id: string; admin_token: string; device_id: string | null }>('/api/v1/setup', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
@@ -90,15 +91,25 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ token }),
     }),
-  generateInvite: () =>
-    request<{ invite_code: string; expires_in: number }>('/api/v1/invite/generate', { method: 'POST' }),
-  acceptInvite: (code: string) =>
-    request<{ status: string; peer_url: string; peer_node_id: string; api_key_updated: boolean; mutual: boolean; mutual_message: string }>('/api/v1/invite/accept', {
+  // Trust management (certificate-based peer identity)
+  getTrust: () =>
+    request<TrustListResponse>('/api/v1/trust'),
+  getIdentity: () =>
+    request<IdentityResponse>('/api/v1/trust/identity'),
+  approvePeer: (device_id: string) =>
+    request<ApprovePeerResponse>('/api/v1/trust/approve', {
       method: 'POST',
-      body: JSON.stringify({ code }),
+      body: JSON.stringify({ device_id }),
     }),
+  rejectPeer: (device_id: string) =>
+    request<{ status: string }>('/api/v1/trust/reject', {
+      method: 'POST',
+      body: JSON.stringify({ device_id }),
+    }),
+  revokeTrust: (device_id: string) =>
+    request<{ status: string }>(`/api/v1/trust?device_id=${encodeURIComponent(device_id)}`, { method: 'DELETE' }),
   getAdminTokenFromServer: () =>
     request<{ admin_token: string }>('/api/v1/admin-token'),
   discoverPeers: () =>
-    request<{ url: string; node_id: string; ip: string; last_seen: number }[]>('/api/v1/discover'),
+    request<{ url: string; node_id: string; device_id: string; ip: string; last_seen: number }[]>('/api/v1/discover'),
 }

@@ -17,7 +17,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from config import Settings, __version__, bootstrap_env, get_app_dir
-from utils.certs import ensure_certs
+from utils.certs import ensure_certs, get_device_id
 from utils.logging import get_logger, setup_logging
 
 
@@ -79,11 +79,15 @@ def _boot(quiet: bool = False) -> tuple[Settings, "Database", "SyncIgnore", bool
 
 def _print_banner(settings: Settings, first_run: bool) -> None:
     url = f"https://localhost:{settings.port}"
+    device_id = (
+        get_device_id(settings.ssl_cert) if Path(settings.ssl_cert).is_file() else "N/A"
+    )
     table = Table(show_header=False, box=None, padding=(0, 2))
     table.add_column(style="bold cyan", min_width=14)
     table.add_column()
     table.add_row("URL", url)
     table.add_row("Node ID", settings.node_id)
+    table.add_row("Device ID", f"[bold]{device_id}[/bold]")
     table.add_row("Sync folder", settings.sync_folder)
     table.add_row("Mode", "P2P bidirectional")
     if first_run:
@@ -130,15 +134,21 @@ def run(
     from core.queue_worker import QueueWorker
     from core.server import app as fastapi_app
     from core.watcher import FileWatcher
+    from utils.trust_store import TrustStore
 
     settings, db, ignore, first_run = _boot()
     log = get_logger("main")
 
+    # Initialise the trust store for certificate-based peer auth
+    trust_store = TrustStore(settings.trust_store_path)
+    trust_store.cleanup_stale_pending()
+
     if not settings.verify_tls:
         log.warning(
             "TLS certificate verification is DISABLED (verify_tls=false). "
-            "Peer connections are encrypted but not authenticated. "
-            "Set VERIFY_TLS=true in .env for production use."
+            "Peer connections are encrypted but server certificates are not "
+            "validated at the TLS level. Peer identity is verified via "
+            "certificate-pinned signatures in the trust store."
         )
 
     if not client_only and not _port_available(settings.port):
@@ -157,7 +167,12 @@ def run(
 
     from utils.discovery import LANDiscovery
 
-    discovery = LANDiscovery(settings.node_id, settings.server_url, settings.port)
+    device_id = (
+        get_device_id(settings.ssl_cert) if Path(settings.ssl_cert).is_file() else ""
+    )
+    discovery = LANDiscovery(
+        settings.node_id, settings.server_url, settings.port, device_id=device_id
+    )
     discovery.start()
     components.append(discovery)
 
@@ -170,6 +185,7 @@ def run(
         fastapi_app.state.db = db
         fastapi_app.state.peer_manager = peer_mgr
         fastapi_app.state.discovery = discovery
+        fastapi_app.state.trust_store = trust_store
 
         ssl_key = settings.ssl_key if Path(settings.ssl_key).is_file() else None
         ssl_cert = settings.ssl_cert if Path(settings.ssl_cert).is_file() else None

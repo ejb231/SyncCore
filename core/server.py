@@ -26,7 +26,7 @@ import hmac as _hmac
 
 from core.management_api import router as management_router, setup_router
 from core.ws import ws_manager
-from utils.auth import require_api_key
+from utils.auth import require_peer_auth
 from utils.conflict import resolve_conflict
 from utils.file_ops import calculate_hash, decompress, hash_bytes
 from utils.logging import get_logger
@@ -179,13 +179,13 @@ async def health():
     return {"status": "ok"}
 
 
-@app.get("/index", dependencies=[Depends(require_api_key)])
+@app.get("/index", dependencies=[Depends(require_peer_auth)])
 async def get_index(request: Request):
     db = request.app.state.db
     return [dict(r) for r in db.all_files()]
 
 
-@app.post("/upload", dependencies=[Depends(require_api_key)])
+@app.post("/upload", dependencies=[Depends(require_peer_auth)])
 async def upload_file(
     request: Request,
     path: str = Form(...),
@@ -282,7 +282,110 @@ async def upload_file(
 # ---------------------------------------------------------------------------
 
 
-@app.post("/peers/register", dependencies=[Depends(require_api_key)])
+# ---------------------------------------------------------------------------
+# Identity and pairing (unauthenticated — safe to expose)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/identity")
+async def get_identity(request: Request):
+    """Return this node's Device ID, node name, and public key.
+
+    This endpoint is intentionally unauthenticated because all returned
+    data is public (the Device ID is a hash of the public cert and the
+    public key is, well, public).
+    """
+    settings = request.app.state.settings
+    from utils.certs import get_device_id, get_public_key_pem
+
+    device_id = get_device_id(settings.ssl_cert)
+    public_key = get_public_key_pem(settings.ssl_cert)
+    return {
+        "device_id": device_id,
+        "node_id": settings.node_id,
+        "public_key_pem": public_key,
+    }
+
+
+_pair_limiter = RateLimiter(window=60.0, limit=10)
+
+
+@app.post("/pair/request")
+async def pair_request(request: Request):
+    """Accept an incoming pairing request from another node.
+
+    The remote sends its identity; we add it to the pending-approval list
+    so the local user can approve it from the web UI.
+    """
+    client_ip = request.client.host if request.client else "unknown"
+    if not _pair_limiter.allow(client_ip):
+        raise HTTPException(status_code=429, detail="Pairing rate limit exceeded")
+
+    body = await request.json()
+    device_id = body.get("device_id", "").strip()
+    node_id = body.get("node_id", "").strip()
+    url = body.get("url", "").strip()
+    public_key_pem = body.get("public_key_pem", "").strip()
+
+    if not all([device_id, node_id, url, public_key_pem]):
+        raise HTTPException(
+            status_code=422,
+            detail="device_id, node_id, url, and public_key_pem are required",
+        )
+
+    trust_store = getattr(request.app.state, "trust_store", None)
+    if trust_store is None:
+        raise HTTPException(status_code=503, detail="Trust store not available")
+
+    if trust_store.is_trusted(device_id):
+        return {"status": "already_trusted"}
+
+    trust_store.add_pending(device_id, url, node_id, public_key_pem)
+    await ws_manager.broadcast(
+        {
+            "event": "pair_request",
+            "data": {
+                "device_id": device_id,
+                "node_id": node_id,
+                "url": url,
+            },
+        }
+    )
+    return {"status": "pending"}
+
+
+@app.post("/pair/complete", dependencies=[Depends(require_peer_auth)])
+async def pair_complete(request: Request):
+    """Called by the remote after the local user approved the pairing.
+
+    The remote sends its identity so we can confirm mutual trust.
+    This endpoint requires authentication (the remote must already be
+    trusted from the approval step).
+    """
+    body = await request.json()
+    device_id = body.get("device_id", "").strip()
+    node_id = body.get("node_id", "").strip()
+    url = body.get("url", "").strip()
+    public_key_pem = body.get("public_key_pem", "").strip()
+
+    if not all([device_id, node_id, url, public_key_pem]):
+        raise HTTPException(
+            status_code=422,
+            detail="device_id, node_id, url, and public_key_pem are required",
+        )
+
+    trust_store = getattr(request.app.state, "trust_store", None)
+    if trust_store is None:
+        raise HTTPException(status_code=503, detail="Trust store not available")
+
+    # Ensure this peer is already trusted (must be, since require_peer_auth passed)
+    if not trust_store.is_trusted(device_id):
+        trust_store.trust_peer(device_id, url, node_id, public_key_pem)
+
+    return {"status": "trusted"}
+
+
+@app.post("/peers/register", dependencies=[Depends(require_peer_auth)])
 async def register_peer(request: Request):
     peer_mgr = getattr(request.app.state, "peer_manager", None)
     if peer_mgr is None:
@@ -309,7 +412,7 @@ async def register_peer(request: Request):
     return {"status": "registered", "url": url, "node_id": node_id}
 
 
-@app.get("/peers", dependencies=[Depends(require_api_key)])
+@app.get("/peers", dependencies=[Depends(require_peer_auth)])
 async def list_peers(request: Request):
     peer_mgr = getattr(request.app.state, "peer_manager", None)
     if peer_mgr is None:
@@ -317,7 +420,7 @@ async def list_peers(request: Request):
     return peer_mgr.all_peers
 
 
-@app.get("/download", dependencies=[Depends(require_api_key)])
+@app.get("/download", dependencies=[Depends(require_peer_auth)])
 async def download_file(request: Request, path: str):
     """Serve a single file from the sync folder so peers can pull it."""
     from fastapi.responses import Response
@@ -339,7 +442,7 @@ async def download_file(request: Request, path: str):
         raise HTTPException(status_code=500, detail="Read failed")
 
 
-@app.delete("/delete", dependencies=[Depends(require_api_key)])
+@app.delete("/delete", dependencies=[Depends(require_peer_auth)])
 async def delete_file(request: Request, path: str):
     settings = request.app.state.settings
     db = request.app.state.db

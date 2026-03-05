@@ -20,10 +20,13 @@ BROADCAST_INTERVAL = 15.0
 class LANDiscovery:
     """Broadcast and discover SyncCore nodes on the local network."""
 
-    def __init__(self, node_id: str, server_url: str, port: int) -> None:
+    def __init__(
+        self, node_id: str, server_url: str, port: int, device_id: str = ""
+    ) -> None:
         self.node_id = node_id
         self.server_url = server_url
         self.port = port
+        self.device_id = device_id
         self._discovered: dict[str, dict] = {}
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -46,6 +49,7 @@ class LANDiscovery:
         payload = {
             "service": "synccore",
             "node_id": self.node_id,
+            "device_id": self.device_id,
             "url": self.server_url,
             "port": self.port,
             "ts": time.time(),
@@ -98,11 +102,13 @@ class LANDiscovery:
                         continue  # Ignore our own broadcasts
                     peer_url = msg.get("url", "")
                     node_id = msg.get("node_id", "")
+                    device_id = msg.get("device_id", "")
                     if peer_url and node_id:
                         with self._lock:
                             self._discovered[peer_url] = {
                                 "url": peer_url,
                                 "node_id": node_id,
+                                "device_id": device_id,
                                 "ip": addr[0],
                                 "last_seen": time.time(),
                             }

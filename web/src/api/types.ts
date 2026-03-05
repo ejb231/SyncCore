@@ -2,9 +2,12 @@
 
 export interface StatusResponse {
   node_id: string
+  device_id: string | null
   sync_folder: string
   port: number
   peer_count: number
+  trusted_peers: number
+  pending_approvals: number
   indexed_files: number
   pending_queue: number
   uptime: number
@@ -40,6 +43,34 @@ export interface Peer {
   failures: number
 }
 
+export interface TrustedPeer {
+  device_id: string
+  url: string
+  node_id: string
+  public_key_pem: string
+  approved_at: number
+  last_seen: number
+}
+
+export interface PendingPeer {
+  device_id: string
+  url: string
+  node_id: string
+  public_key_pem: string
+  requested_at: number
+}
+
+export interface TrustListResponse {
+  trusted: TrustedPeer[]
+  pending: PendingPeer[]
+}
+
+export interface IdentityResponse {
+  device_id: string
+  node_id: string
+  public_key_pem: string
+}
+
 export interface QueueTask {
   id: number
   action: string
@@ -62,9 +93,23 @@ export interface LogEntry {
 
 export interface SetupPayload {
   sync_folder: string
-  api_key: string
   node_id: string
   peers: string
+}
+
+export interface AddPeerResponse {
+  status: string
+  url: string
+  device_id: string
+  node_id: string
+  mutual: boolean
+  mutual_message: string
+}
+
+export interface ApprovePeerResponse {
+  status: string
+  mutual: boolean
+  mutual_message: string
 }
 
 export interface WSEvent {

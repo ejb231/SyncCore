@@ -1,4 +1,9 @@
-"""Peer registry, health checking, rate limiting, and announcement."""
+"""Peer registry, health checking, rate limiting, and announcement.
+
+Peers authenticate via RSA-PSS signed requests (``X-Device-ID``,
+``X-Timestamp``, ``X-Signature`` headers).  Legacy ``X-API-Key`` headers
+are still sent for backward compatibility.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +16,7 @@ from urllib.parse import urljoin
 
 import httpx
 
+from utils.certs import get_device_id, sign_request
 from utils.logging import get_logger
 
 log = get_logger("peers")
@@ -79,11 +85,17 @@ class PeerManager:
         self.rate_limiter = RateLimiter()
         self.max_peers: int = getattr(settings, "max_peers", 20)
         self._client_factory = client_factory
+        self._device_id = get_device_id(settings.ssl_cert)
+        self._key_path = settings.ssl_key
         self._http = self._make_http_client()
 
         for url in settings.peer_list:
             self._peers[url] = PeerRecord(url=url, node_id="static")
             log.info("Static peer loaded: %s", url)
+
+    def _auth_headers(self, method: str, path: str) -> dict[str, str]:
+        """Generate cert-based auth headers for an outgoing request."""
+        return sign_request(self._key_path, self._device_id, method, path)
 
     def _make_http_client(self) -> httpx.Client:
         """Create a fresh httpx client (or return the injected factory)."""
@@ -172,8 +184,9 @@ class PeerManager:
             self._peers.pop(url.rstrip("/"), None)
 
     def _verify_peer(self, url: str) -> tuple[bool, str]:
-        """Confirm the remote is a real SyncCore node with a matching API key.
+        """Confirm the remote is a real SyncCore node.
 
+        Checks /health (unauthenticated) and /index (authenticated).
         Returns (ok, reason) so callers can surface precise feedback.
         """
         try:
@@ -183,11 +196,13 @@ class PeerManager:
                 reason = f"Not a SyncCore node (health check returned HTTP {resp.status_code})"
                 log.warning("Peer %s: %s", url, reason)
                 return False, reason
-            resp = http.get(urljoin(url, "/index"))
+            index_path = "/index"
+            headers = self._auth_headers("GET", index_path)
+            resp = http.get(urljoin(url, index_path), headers=headers)
             if resp.status_code == 403:
                 reason = (
-                    "API key mismatch \u2014 the remote node rejected our API key. "
-                    "Use an invite code or set the same API key on both nodes."
+                    "Peer rejected our identity \u2014 we may not be trusted yet. "
+                    "Ask the remote user to approve this device, or use an invite code."
                 )
                 log.warning("Peer %s: %s", url, reason)
                 return False, reason
@@ -253,12 +268,15 @@ class PeerManager:
         """Broadcast our own URL and node_id to every active peer."""
         my_url = self.settings.server_url
         my_id = self.settings.node_id
+        register_path = "/peers/register"
         for url in self.active_urls:
             try:
                 http = self._ensure_http()
+                headers = self._auth_headers("POST", register_path)
                 resp = http.post(
-                    urljoin(url, "/peers/register"),
+                    urljoin(url, register_path),
                     json={"url": my_url, "node_id": my_id},
+                    headers=headers,
                 )
                 if resp.status_code == 200:
                     log.info("Announced to %s", url)
