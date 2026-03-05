@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Routes, Route } from 'react-router-dom'
 import Sidebar from './components/Sidebar'
 import Dashboard from './pages/Dashboard'
@@ -10,7 +10,7 @@ import SettingsPage from './pages/SettingsPage'
 import LogsPage from './pages/LogsPage'
 import SetupPage from './pages/SetupPage'
 import { useWebSocket } from './hooks/useWebSocket'
-import { getAdminToken } from './api/client'
+import { getAdminToken, onAuthFailure } from './api/client'
 
 function Layout() {
   const { toast } = useWebSocket()
@@ -39,6 +39,12 @@ function Layout() {
 
 export default function App() {
   const [setupDone, setSetupDone] = useState(!!getAdminToken())
+
+  // If the server rejects our saved token (e.g. after a reset),
+  // drop back to the setup page so the user can re-authenticate.
+  useEffect(() => {
+    onAuthFailure(() => setSetupDone(false))
+  }, [])
 
   if (!setupDone) {
     return (

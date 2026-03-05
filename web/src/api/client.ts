@@ -3,14 +3,25 @@ import type {
 } from './types'
 
 let adminToken = localStorage.getItem('adminToken') || ''
+let _onAuthFailure: (() => void) | null = null
 
 export function setAdminToken(token: string) {
   adminToken = token
   localStorage.setItem('adminToken', token)
 }
 
+export function clearAdminToken() {
+  adminToken = ''
+  localStorage.removeItem('adminToken')
+}
+
 export function getAdminToken(): string {
   return adminToken
+}
+
+/** Register a callback invoked when the server rejects our admin token. */
+export function onAuthFailure(cb: () => void) {
+  _onAuthFailure = cb
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -26,6 +37,12 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const res = await fetch(path, { ...options, headers })
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText)
+    // Stale or invalid admin token — clear it and notify the app so it
+    // can redirect back to the setup / login page.
+    if (res.status === 401 && adminToken) {
+      clearAdminToken()
+      _onAuthFailure?.()
+    }
     throw new Error(`${res.status}: ${text}`)
   }
   return res.json()

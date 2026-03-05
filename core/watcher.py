@@ -25,13 +25,30 @@ class SyncHandler(FileSystemEventHandler):
         self.settings = settings
         self.db = db
         self.ignore = ignore
-        self.sync_root = Path(settings.sync_folder).resolve()
+        self.sync_root = self._normalize(Path(settings.sync_folder).resolve())
+
+    @staticmethod
+    def _normalize(p: Path) -> Path:
+        """Strip the Windows ``\\\\?\\`` extended-length prefix if present.
+
+        ``Path.resolve()`` on modern Python/Windows can return paths with
+        this prefix, which then fail ``relative_to()`` against a root that
+        was resolved without it.
+        """
+        s = str(p)
+        if s.startswith("\\\\?\\"):
+            return Path(s[4:])
+        return p
 
     def _rel(self, absolute_path: str) -> str:
-        return Path(absolute_path).resolve().relative_to(self.sync_root).as_posix()
+        resolved = self._normalize(Path(absolute_path).resolve())
+        return resolved.relative_to(self.sync_root).as_posix()
 
     def _should_skip(self, event) -> bool:
         if event.is_directory:
+            return True
+        # Ignore temporary files created during atomic writes
+        if event.src_path.endswith(".synctmp"):
             return True
         rel = self._rel(event.src_path)
         return self.ignore.is_ignored(rel) or consume_server_write(rel)
