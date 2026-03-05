@@ -85,4 +85,20 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
+  login: (token: string) =>
+    request<{ status: string; node_id: string }>('/api/v1/login', {
+      method: 'POST',
+      body: JSON.stringify({ token }),
+    }),
+  generateInvite: () =>
+    request<{ invite_code: string; expires_in: number }>('/api/v1/invite/generate', { method: 'POST' }),
+  acceptInvite: (code: string) =>
+    request<{ status: string; peer_url: string; peer_node_id: string; api_key_updated: boolean; mutual: boolean; mutual_message: string }>('/api/v1/invite/accept', {
+      method: 'POST',
+      body: JSON.stringify({ code }),
+    }),
+  getAdminTokenFromServer: () =>
+    request<{ admin_token: string }>('/api/v1/admin-token'),
+  discoverPeers: () =>
+    request<{ url: string; node_id: string; ip: string; last_seen: number }[]>('/api/v1/discover'),
 }

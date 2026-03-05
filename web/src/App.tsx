@@ -9,6 +9,7 @@ import QueuePage from './pages/QueuePage'
 import SettingsPage from './pages/SettingsPage'
 import LogsPage from './pages/LogsPage'
 import SetupPage from './pages/SetupPage'
+import LoginPage from './pages/LoginPage'
 import { useWebSocket } from './hooks/useWebSocket'
 import { getAdminToken, onAuthFailure } from './api/client'
 
@@ -37,20 +38,67 @@ function Layout() {
   )
 }
 
-export default function App() {
-  const [setupDone, setSetupDone] = useState(!!getAdminToken())
+type AppState = 'loading' | 'setup' | 'login' | 'ready'
 
-  // If the server rejects our saved token (e.g. after a reset),
-  // drop back to the setup page so the user can re-authenticate.
+export default function App() {
+  const [state, setState] = useState<AppState>('loading')
+
   useEffect(() => {
-    onAuthFailure(() => setSetupDone(false))
+    checkState()
+    onAuthFailure(() => setState('login'))
   }, [])
 
-  if (!setupDone) {
+  async function checkState() {
+    try {
+      const res = await fetch('/api/v1/setup/status')
+      if (!res.ok) {
+        // Endpoint returned an error — assume setup is done,
+        // show login unless we already have a token.
+        setState(getAdminToken() ? 'ready' : 'login')
+        return
+      }
+      const text = await res.text()
+      let data: { setup_complete?: boolean }
+      try {
+        data = JSON.parse(text)
+      } catch {
+        // Got a non-JSON response (e.g. the SPA index.html)
+        setState(getAdminToken() ? 'ready' : 'login')
+        return
+      }
+      if (!data.setup_complete) {
+        setState('setup')
+      } else if (getAdminToken()) {
+        setState('ready')
+      } else {
+        setState('login')
+      }
+    } catch {
+      // Network error / server not ready
+      setState(getAdminToken() ? 'ready' : 'login')
+    }
+  }
+
+  if (state === 'loading') {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center">
+        <div className="text-gray-400 text-sm">Connecting to SyncCore…</div>
+      </div>
+    )
+  }
+
+  if (state === 'setup') {
     return (
       <Routes>
-        <Route path="/setup" element={<SetupPage onComplete={() => setSetupDone(true)} />} />
-        <Route path="*" element={<SetupPage onComplete={() => setSetupDone(true)} />} />
+        <Route path="*" element={<SetupPage onComplete={() => setState('ready')} />} />
+      </Routes>
+    )
+  }
+
+  if (state === 'login') {
+    return (
+      <Routes>
+        <Route path="*" element={<LoginPage onComplete={() => setState('ready')} />} />
       </Routes>
     )
   }

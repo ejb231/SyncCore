@@ -155,6 +155,12 @@ def run(
     peer_mgr.start()
     components.append(peer_mgr)
 
+    from utils.discovery import LANDiscovery
+
+    discovery = LANDiscovery(settings.node_id, settings.server_url, settings.port)
+    discovery.start()
+    components.append(discovery)
+
     watcher = None
     worker = None
     client = None
@@ -163,6 +169,7 @@ def run(
         fastapi_app.state.settings = settings
         fastapi_app.state.db = db
         fastapi_app.state.peer_manager = peer_mgr
+        fastapi_app.state.discovery = discovery
 
         ssl_key = settings.ssl_key if Path(settings.ssl_key).is_file() else None
         ssl_cert = settings.ssl_cert if Path(settings.ssl_cert).is_file() else None
@@ -229,7 +236,10 @@ def run(
         signal.signal(signal.SIGTERM, _shutdown)
 
     try:
-        stop_event.wait()
+        # On Windows, Event.wait() without a timeout is not interruptible
+        # by Ctrl+C.  Use a short-timeout loop so the signal handler runs.
+        while not stop_event.is_set():
+            stop_event.wait(timeout=0.5)
     finally:
         orchestrator.stop_all()
         for c in components:
@@ -290,6 +300,20 @@ def reset():
         console.print("  Run [bold]python main.py run[/bold] to set up again.")
     else:
         console.print("  [dim]Nothing to remove - already clean.[/dim]")
+
+
+@cli.command(name="show-token")
+def show_token():
+    """Print the admin token for recovery when locked out of the web UI."""
+    settings, _, _, _ = _boot(quiet=True)
+    if not settings.setup_complete:
+        console.print(
+            "\n  [yellow]Setup has not been completed yet.[/yellow]\n"
+            "  Run [bold]python main.py run[/bold] first.\n"
+        )
+        raise typer.Exit(1)
+    console.print(f"\n  [bold]Admin Token:[/bold]  {settings.admin_token}\n")
+    console.print("  [dim]Paste this into the web UI login page to sign in.[/dim]\n")
 
 
 if __name__ == "__main__":

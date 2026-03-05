@@ -402,6 +402,11 @@ if _web_dist.is_dir():
         This route is registered AFTER every API route, so /api/v1/* and
         other endpoints always take priority.
         """
+        # Never intercept API routes — if we reach here for /api/*, it
+        # means the endpoint doesn't exist.  Return 404 so the frontend
+        # can detect the error instead of silently getting HTML.
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="Not found")
         # Root-level static files (e.g. vite.svg)
         if full_path and "/" not in full_path:
             candidate = _web_dist / full_path

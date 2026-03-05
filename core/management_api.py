@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import base64
+import hmac
+import json
 import time
 from pathlib import Path
 from typing import Any
@@ -105,6 +108,18 @@ async def put_config(request: Request):
             orch.reconfigure(new_settings)
 
     return {"updated": list(updates.keys()), "restart_required": restart_required}
+
+
+# ---------------------------------------------------------------------------
+# Admin token (reveal)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/admin-token", dependencies=[Depends(require_setup)])
+async def get_admin_token_value(request: Request):
+    """Return the raw admin token (for reveal / copy in the UI)."""
+    settings: Settings = request.app.state.settings
+    return {"admin_token": settings.admin_token}
 
 
 # ---------------------------------------------------------------------------
@@ -228,7 +243,29 @@ async def add_peer(request: Request):
     ok, msg = pm.register(url, body.get("node_id", "manual"), requester_ip="admin")
     if not ok:
         raise HTTPException(status_code=400, detail=msg)
-    return {"status": "added", "url": url}
+
+    # Mutual registration: tell the remote node about us
+    settings: Settings = request.app.state.settings
+    mutual_ok = False
+    mutual_msg = ""
+    try:
+        http = pm._ensure_http()
+        resp = http.post(
+            url.rstrip("/") + "/peers/register",
+            json={"url": settings.server_url, "node_id": settings.node_id},
+        )
+        mutual_ok = resp.status_code == 200
+        if not mutual_ok:
+            mutual_msg = f"Remote returned HTTP {resp.status_code}"
+    except Exception as exc:
+        mutual_msg = str(exc)
+
+    return {
+        "status": "added",
+        "url": url,
+        "mutual": mutual_ok,
+        "mutual_message": mutual_msg,
+    }
 
 
 @router.delete("/peers", dependencies=[Depends(require_setup)])
@@ -238,6 +275,115 @@ async def remove_peer(request: Request, url: str):
         raise HTTPException(status_code=503, detail="Peer manager not available")
     pm.remove(url)
     return {"status": "removed", "url": url}
+
+
+# ---------------------------------------------------------------------------
+# Invite codes
+# ---------------------------------------------------------------------------
+
+
+@router.post("/invite/generate", dependencies=[Depends(require_setup)])
+async def generate_invite(request: Request):
+    """Generate a time-limited invite code for painless peer pairing."""
+    settings: Settings = request.app.state.settings
+    payload = {
+        "url": settings.server_url,
+        "api_key": settings.api_key,
+        "node_id": settings.node_id,
+        "expires": time.time() + 3600,
+    }
+    code = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+    return {"invite_code": code, "expires_in": 3600}
+
+
+@router.post("/invite/accept", dependencies=[Depends(require_setup)])
+async def accept_invite(request: Request):
+    """Accept an invite code and establish mutual peering."""
+    body = await request.json()
+    code = body.get("code", "").strip()
+    if not code:
+        raise HTTPException(status_code=422, detail="Invite code is required")
+
+    # Decode the invite (add padding back for base64)
+    try:
+        padded = code + "=" * (-len(code) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded))
+    except Exception:
+        raise HTTPException(status_code=422, detail="Invalid invite code format")
+
+    if payload.get("expires", 0) < time.time():
+        raise HTTPException(status_code=410, detail="Invite code has expired")
+
+    peer_url = payload.get("url", "").strip().rstrip("/")
+    peer_api_key = payload.get("api_key", "").strip()
+    peer_node_id = payload.get("node_id", "unknown")
+
+    if not peer_url:
+        raise HTTPException(status_code=422, detail="Invite code missing peer URL")
+    if not peer_api_key:
+        raise HTTPException(status_code=422, detail="Invite code missing API key")
+
+    settings: Settings = request.app.state.settings
+    pm = getattr(request.app.state, "peer_manager", None)
+    if pm is None:
+        raise HTTPException(status_code=503, detail="Peer manager not available")
+
+    # Update our API key to match the peer's so sync traffic is authenticated
+    api_key_changed = False
+    if settings.api_key != peer_api_key:
+        write_env({"API_KEY": peer_api_key})
+        new_settings = Settings.reload()
+        request.app.state.settings = new_settings
+        pm.settings = new_settings
+        pm._http = pm._make_http_client()
+        orch = getattr(request.app.state, "orchestrator", None)
+        if orch:
+            orch.reconfigure(new_settings)
+        settings = new_settings
+        api_key_changed = True
+
+    # Register the peer locally (trusted via invite — skip verification)
+    ok, msg = pm.register_skip_verify(peer_url, peer_node_id)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+
+    # Mutual registration: tell the remote about us
+    mutual_ok = False
+    mutual_msg = ""
+    try:
+        http = pm._ensure_http()
+        resp = http.post(
+            peer_url + "/peers/register",
+            json={"url": settings.server_url, "node_id": settings.node_id},
+        )
+        mutual_ok = resp.status_code == 200
+        if not mutual_ok:
+            mutual_msg = f"Remote returned HTTP {resp.status_code}"
+    except Exception as exc:
+        mutual_msg = str(exc)
+
+    return {
+        "status": "connected",
+        "peer_url": peer_url,
+        "peer_node_id": peer_node_id,
+        "api_key_updated": api_key_changed,
+        "mutual": mutual_ok,
+        "mutual_message": mutual_msg,
+    }
+
+
+# ---------------------------------------------------------------------------
+# LAN discovery
+# ---------------------------------------------------------------------------
+
+
+@router.get("/discover", dependencies=[Depends(require_setup)])
+async def discover_peers(request: Request):
+    """Return SyncCore nodes discovered on the local network."""
+    discovery = getattr(request.app.state, "discovery", None)
+    if discovery is None:
+        return []
+    return discovery.discovered_peers
 
 
 # ---------------------------------------------------------------------------
@@ -282,6 +428,31 @@ async def get_logs(request: Request, level: str | None = None):
 
 
 setup_router = APIRouter(prefix="/api/v1")
+
+
+@setup_router.get("/setup/status")
+async def setup_status(request: Request):
+    """Unauthenticated endpoint: check whether first-run setup is complete."""
+    settings: Settings = request.app.state.settings
+    return {
+        "setup_complete": settings.setup_complete,
+        "node_id": settings.node_id if settings.setup_complete else None,
+    }
+
+
+@setup_router.post("/login")
+async def login(request: Request):
+    """Validate an admin token and return node info (for the login page)."""
+    settings: Settings = request.app.state.settings
+    if not settings.setup_complete:
+        raise HTTPException(status_code=400, detail="Setup not complete")
+    body = await request.json()
+    token = body.get("token", "").strip()
+    if not token or not hmac.compare_digest(
+        token.encode(), settings.admin_token.encode()
+    ):
+        raise HTTPException(status_code=401, detail="Invalid admin token")
+    return {"status": "ok", "node_id": settings.node_id}
 
 
 @setup_router.post("/setup")
