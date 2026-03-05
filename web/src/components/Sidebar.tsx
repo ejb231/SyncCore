@@ -25,7 +25,7 @@ export default function Sidebar() {
         </div>
         <div>
           <h1 className="text-lg font-bold text-white leading-tight">SyncCore</h1>
-          <span className="text-[10px] text-gray-500 leading-none">v1.0</span>
+          <span className="text-[10px] text-gray-500 leading-none">v1.3.1</span>
         </div>
       </div>
       <nav className="flex flex-col gap-1 flex-1">

@@ -664,6 +664,13 @@ async def initial_setup(request: Request):
         if key in body and body[key]:
             env_updates[key.upper()] = str(body[key])
 
+    # Auto-detect LAN IP for server_url if not explicitly provided
+    if "SERVER_URL" not in env_updates:
+        from config import get_lan_ip
+
+        port = env_updates.get("PORT", str(settings.port))
+        env_updates["SERVER_URL"] = f"https://{get_lan_ip()}:{port}"
+
     if "SYNC_FOLDER" in env_updates:
         try:
             validate_folder_path(env_updates["SYNC_FOLDER"], label="sync_folder")

@@ -56,6 +56,23 @@ def write_env(updates: dict, env_path: str | None = None) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def get_lan_ip() -> str:
+    """Return the machine's LAN IP address, or 'localhost' as fallback."""
+    import socket as _socket
+
+    try:
+        # Connect to an external address to find which interface the OS prefers.
+        # No data is actually sent — the socket is UDP and unconnected.
+        s = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+        s.settimeout(1)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "localhost"
+
+
 def bootstrap_env() -> bool:
     """Create a .env with secure defaults on first run. Returns True if created."""
     env_path = _BASE_DIR / ".env"
@@ -64,7 +81,7 @@ def bootstrap_env() -> bool:
 
     defaults = {
         "SYNC_FOLDER": str(_BASE_DIR / "data" / "sync_folder"),
-        "SERVER_URL": "https://localhost:8443",
+        "SERVER_URL": f"https://{get_lan_ip()}:8443",
         "PORT": "8443",
         "API_KEY": secrets.token_urlsafe(32),
         "NODE_ID": str(uuid.uuid4())[:8],
@@ -119,7 +136,7 @@ class Settings(BaseSettings):
     """Typed settings loaded from environment variables / .env file."""
 
     sync_folder: str = str(_BASE_DIR / "data" / "sync_folder")
-    server_url: str = "https://localhost:8443"
+    server_url: str = f"https://{get_lan_ip()}:8443"
     port: int = 8443
     api_key: str = "change-me"
     node_id: str = str(uuid.uuid4())[:8]
