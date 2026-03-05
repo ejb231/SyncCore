@@ -2,7 +2,7 @@
 
 **Keep folders in sync across your machines — automatically, securely, with zero configuration.**
 
-SyncCore is a peer-to-peer file synchronisation tool with a built-in web dashboard. Drop files into a folder on one machine and they appear on all the others. Everything is encrypted over TLS, everything runs from a single command.
+SyncCore is a peer-to-peer file synchronisation tool with a built-in web dashboard. Drop files into a folder on one machine and they appear on all the others. Peers authenticate using certificate-pinned signatures (TOFU model), discover each other automatically on the LAN, and all traffic is encrypted over TLS. Everything runs from a single command.
 
 ---
 
@@ -44,11 +44,12 @@ python main.py run
 ```
 
 That's it. On first launch SyncCore will:
-- Generate a secure configuration file (`.env`) with random API key, admin token, and node ID
-- Create self-signed TLS certificates automatically (no OpenSSL needed)
-- Open your browser to the management dashboard
+- Generate a secure configuration file (`.env`) with random admin token and node ID
+- Generate a 2048-bit RSA key pair and self-signed TLS certificate (no OpenSSL needed)
+- Create a unique device identity (SHA-256 fingerprint of the certificate)
+- Open your browser to the setup wizard
 
-Your admin token and URL are printed in the terminal — use them to log in.
+Your admin token and dashboard URL are printed in the terminal — use them to log in.
 
 ### Starting fresh
 
@@ -79,35 +80,37 @@ python main.py run
 
 Open **https://localhost:8443** in your browser after starting SyncCore.
 
+On first visit you'll see the **Setup** wizard to configure your sync folder and admin token. After setup, log in via the **Login** page using your admin token.
+
 | Page | What you can do |
 |---|---|
 | **Dashboard** | See sync status, file count, queue depth, peer count, uptime at a glance |
 | **Files** | Browse and search all synced files |
 | **Conflicts** | Resolve files that were edited on multiple machines at once |
-| **Peers** | Add or remove other SyncCore nodes |
+| **Peers** | Discover, pair, approve, and revoke peer nodes |
 | **Queue** | Watch pending sync tasks, retry failures, pause/resume processing |
-| **Settings** | Change configuration without editing files |
+| **Settings** | Change configuration, manage .syncignore, export device identity |
 | **Logs** | Live, colour-coded log stream with level filtering |
 
 ---
 
 ## Configuration
 
-All settings live in a `.env` file that is auto-generated on first run. You can edit it by hand or through the web dashboard's **Settings** page.
+All settings live in a `.env` file that is auto-generated on first run (file permissions are restricted to the current OS user). You can edit it by hand or through the web dashboard's **Settings** page.
 
 | Setting | Default | What it controls |
 |---|---|---|
 | `SYNC_FOLDER` | `./data/sync_folder` | The folder on this machine that stays in sync |
 | `PORT` | `8443` | HTTPS port the server listens on |
-| `API_KEY` | *(auto-generated)* | Shared secret between nodes for sync auth |
+| `API_KEY` | *(auto-generated)* | Legacy shared secret (deprecated — use certificate pairing instead) |
 | `NODE_ID` | *(auto-generated)* | A short name for this machine |
 | `PEERS` | *(empty)* | Comma-separated URLs of other SyncCore nodes |
-| `ADMIN_TOKEN` | *(auto-generated)* | Token for the web dashboard and management API |
+| `ADMIN_TOKEN` | *(auto-generated)* | Bearer token for the web dashboard and management API |
 | `LOG_LEVEL` | `INFO` | How verbose the logs are (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 | `MAX_PEERS` | `20` | Maximum number of connected nodes |
 | `MAX_UPLOAD_MB` | `500` | Maximum file size accepted per upload (in MB) |
 | `VERIFY_TLS` | `false` | Set to `true` to require valid TLS certificates between peers |
-| `DEBUG` | `false` | Enable CORS and extra debug logging |
+| `DEBUG` | `false` | Enable extra debug logging |
 
 ### .syncignore
 
@@ -123,12 +126,14 @@ SyncCore ships with a `.syncignore` file that works like `.gitignore`. Patterns 
 4. On startup, an **initial scan** detects changes made while SyncCore was offline, and a **peer reconciliation** phase pulls any files that appeared on peers in the meantime
 5. If the same file was edited on two machines, a **conflict copy** is created and both versions are kept
 6. File renames are detected (via hash matching) to avoid unnecessary delete + re-upload cycles
-7. The **web dashboard** shows you everything in real time via WebSocket
+7. **LAN discovery** automatically finds other SyncCore nodes on the local network via UDP multicast
+8. The **web dashboard** shows you everything in real time via WebSocket
 
 ```
 python main.py run
 ├── HTTPS Server (FastAPI + Uvicorn)
 │   ├── File sync endpoints (upload / download / delete / index)
+│   ├── Pairing endpoints (/pair/request, /pair/identity)
 │   ├── Management API (/api/v1/*)
 │   ├── WebSocket for real-time updates
 │   └── Web dashboard (served from web/dist/)
@@ -138,6 +143,10 @@ python main.py run
 │   └── Processes queue → uploads to peers (with retry + backoff)
 ├── Peer Manager
 │   └── Health-checks connected nodes
+├── LAN Discovery
+│   └── UDP multicast broadcast + listener for auto-discovery
+├── Trust Store
+│   └── Certificate-pinned peer identities (trusted_peers.json)
 └── Sync Engine
     └── Initial scan + peer reconciliation on startup
 ```
@@ -146,24 +155,33 @@ python main.py run
 
 ## Security
 
+- **Certificate-based authentication (TOFU)** — each node generates a unique RSA key pair. Peers authenticate by signing requests with their private key. The first time two nodes meet, you approve the pairing in the dashboard. After that, identity is verified cryptographically via the pinned public key — no shared secrets needed.
+- **Trust store** — approved peer identities are stored in `trusted_peers.json`. You can revoke any peer at any time from the dashboard.
+- **Request signing** — sync requests include `X-Device-ID`, `X-Timestamp`, and `X-Signature` headers. Signatures use RSA-PSS with a 5-minute timestamp window to prevent replay attacks.
 - **TLS everywhere** — all peer communication uses HTTPS with auto-generated self-signed certificates. Set `VERIFY_TLS=true` when all nodes share a CA for full certificate validation.
-- **API key authentication** — every sync request requires a shared `API_KEY` header.
-- **Admin token** — the web dashboard and management API require a separate `ADMIN_TOKEN`. It is printed in full only on first run, then truncated in logs.
+- **Admin token** — the web dashboard and management API require an `Authorization: Bearer <token>` header. The token is printed in full only on first run, then truncated in logs.
 - **Constant-time auth** — all token/key comparisons use `hmac.compare_digest` to prevent timing attacks.
-- **Private key protection** — TLS private keys are restricted to the current user (icacls on Windows, chmod 600 on Unix).
+- **Private key protection** — TLS private keys and `.env` are restricted to the current user (`icacls` on Windows, `chmod 600` on Unix).
 - **Upload rate limiting** — 60 uploads per minute per IP to prevent abuse.
+- **Gzip bomb protection** — decompressed uploads are capped at the configured `MAX_UPLOAD_MB`.
 - **Path traversal protection** — all file endpoints validate that resolved paths stay within the sync folder.
 - **Atomic writes** — files are written to a temporary `.synctmp` file then atomically renamed, preventing partial reads.
+- **Graceful shutdown** — Ctrl+C cleanly shuts down the server, releases the port, stops all background threads, and closes the database.
 
 ---
 
 ## Connecting Two Machines
 
-1. Install and start SyncCore on both machines
-2. On Machine A, go to **Peers** in the dashboard and add Machine B's URL (e.g. `https://192.168.1.10:8443`)
-3. Machine B will automatically appear. Files will start syncing in both directions.
+SyncCore uses a **trust-on-first-use (TOFU)** model — no shared API keys needed.
 
-Both machines must use the **same API key**. Set it in the `.env` file or through the dashboard before connecting.
+1. Install and start SyncCore on both machines
+2. Both nodes will automatically discover each other if they're on the same LAN
+3. On Machine A, go to **Peers** in the dashboard — Machine B will appear under "Discovered on LAN"
+4. Click **Pair** next to Machine B. Machine A will trust Machine B immediately, and Machine B will see a pending approval request
+5. On Machine B, go to **Peers** and click **Approve** to complete mutual trust
+6. Files will start syncing in both directions
+
+For machines on different networks, enter the URL manually (e.g. `https://192.168.1.10:8443`) in the Peers page.
 
 ---
 
@@ -200,18 +218,20 @@ SyncCore/
 ├── synccore.spec          # PyInstaller build spec
 ├── .syncignore            # Default file exclusion patterns
 ├── core/
-│   ├── server.py          # HTTPS server + sync API + WebSocket
-│   ├── client.py          # Sync client (uploads/downloads to/from peers)
+│   ├── server.py          # HTTPS server + sync API + pairing + WebSocket
+│   ├── client.py          # Sync client (signed uploads/downloads to/from peers)
 │   ├── engine.py          # Initial scan + peer reconciliation
 │   ├── watcher.py         # Real-time file-system monitor
 │   ├── queue_worker.py    # Background task processor with retry
 │   ├── peer_manager.py    # Peer registry + health checks
-│   ├── management_api.py  # Management REST API
+│   ├── management_api.py  # Management REST API + pairing endpoints
 │   ├── orchestrator.py    # Component lifecycle + supervised threads
 │   └── ws.py              # WebSocket manager
 ├── utils/
-│   ├── auth.py            # Authentication middleware
-│   ├── certs.py           # TLS certificate generation
+│   ├── auth.py            # Certificate signature + bearer token auth
+│   ├── certs.py           # TLS certs, RSA key pair, request signing
+│   ├── trust_store.py     # Certificate-pinned peer trust store
+│   ├── discovery.py       # LAN auto-discovery via UDP multicast
 │   ├── file_index.py      # SQLite database (file index, queue, conflicts)
 │   ├── file_ops.py        # Hashing + gzip compression
 │   ├── filters.py         # .syncignore pattern matching
@@ -221,7 +241,8 @@ SyncCore/
 │   └── resilience.py      # Supervised threads, atomic writes, rename detection
 ├── web/                   # React 19 + TypeScript dashboard
 │   ├── src/               # Source (TailwindCSS, TanStack Query, React Router)
+│   │   └── pages/         # Setup, Login, Dashboard, Files, Peers, etc.
 │   └── dist/              # Production build (git-ignored, built by CI)
 └── tests/
-    └── test_sync.py       # 79 tests
+    └── test_sync.py       # Test suite
 ```

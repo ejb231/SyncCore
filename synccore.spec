@@ -70,6 +70,8 @@ a = Analysis(
         "utils.logging",
         "utils.paths",
         "utils.resilience",
+        "utils.discovery",
+        "utils.trust_store",
     ],
     hookspath=[],
     hooksconfig={},
