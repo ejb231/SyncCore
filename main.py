@@ -179,6 +179,7 @@ def run(
     watcher = None
     worker = None
     client = None
+    uvi_server = None
 
     if not client_only:
         fastapi_app.state.settings = settings
@@ -190,15 +191,18 @@ def run(
         ssl_key = settings.ssl_key if Path(settings.ssl_key).is_file() else None
         ssl_cert = settings.ssl_cert if Path(settings.ssl_cert).is_file() else None
 
+        uvi_config = uvicorn.Config(
+            fastapi_app,
+            host="0.0.0.0",
+            port=settings.port,
+            ssl_keyfile=ssl_key,
+            ssl_certfile=ssl_cert,
+            log_level="warning",
+        )
+        uvi_server = uvicorn.Server(uvi_config)
+
         def _serve():
-            uvicorn.run(
-                fastapi_app,
-                host="0.0.0.0",
-                port=settings.port,
-                ssl_keyfile=ssl_key,
-                ssl_certfile=ssl_cert,
-                log_level="warning",
-            )
+            uvi_server.run()
 
         srv_thread = threading.Thread(target=_serve, daemon=True, name="uvicorn")
         srv_thread.start()
@@ -257,6 +261,9 @@ def run(
         while not stop_event.is_set():
             stop_event.wait(timeout=0.5)
     finally:
+        # Signal uvicorn to shut down gracefully so the port is released
+        if not client_only and uvi_server is not None:
+            uvi_server.should_exit = True
         orchestrator.stop_all()
         for c in components:
             if hasattr(c, "stop"):
@@ -264,6 +271,9 @@ def run(
                     c.stop()
                 except Exception:
                     pass
+        # Give uvicorn a moment to close its socket
+        if not client_only:
+            srv_thread.join(timeout=3)
         if db:
             db.close()
 
